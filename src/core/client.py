@@ -1,0 +1,331 @@
+"""
+Polymarket CLOB client wrapper with authentication.
+Handles connection to Polymarket API using py-clob-client.
+"""
+
+from typing import Optional, Dict, Any, List
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, ApiCreds
+import structlog
+
+from config.settings import PolymarketConfig
+
+logger = structlog.get_logger(__name__)
+
+
+class PolymarketClient:
+    """
+    Wrapper around py-clob-client for Polymarket CLOB API.
+    Handles authentication and provides high-level trading methods.
+    """
+    
+    def __init__(self, config: PolymarketConfig):
+        """
+        Initialize Polymarket client with authentication.
+        
+        Args:
+            config: Polymarket configuration with API credentials
+        """
+        self.config = config
+        self._client: Optional[ClobClient] = None
+        logger.info(
+            "initializing_polymarket_client",
+            host=config.host,
+            chain_id=config.chain_id
+        )
+    
+    def connect(self) -> None:
+        """
+        Connect to Polymarket CLOB API.
+        Creates authenticated client instance.
+        """
+        try:
+            # Initialize client with L1 authentication
+            self._client = ClobClient(
+                host=self.config.host,
+                key=self.config.private_key,
+                chain_id=self.config.chain_id,
+                funder=self.config.funder,
+            )
+            
+            # If L2 credentials are provided, set them
+            if self.config.api_key and self.config.secret and self.config.passphrase:
+                api_creds = ApiCreds(
+                    api_key=self.config.api_key,
+                    api_secret=self.config.secret,
+                    api_passphrase=self.config.passphrase,
+                )
+                self._client.set_api_creds(api_creds)
+                logger.info(
+                    "polymarket_client_connected",
+                    host=self.config.host,
+                    auth_mode="L2"
+                )
+            else:
+                logger.info(
+                    "polymarket_client_connected",
+                    host=self.config.host,
+                    auth_mode="L1"
+                )
+        except Exception as e:
+            logger.error(
+                "failed_to_connect_polymarket_client",
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    @property
+    def client(self) -> ClobClient:
+        """Get the underlying CLOB client instance."""
+        if self._client is None:
+            raise RuntimeError(
+                "Client not connected. Call connect() first."
+            )
+        return self._client
+    
+    async def get_markets(self, next_cursor: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get list of available markets.
+        
+        Args:
+            next_cursor: Pagination cursor for next page
+            
+        Returns:
+            Market data including condition_id, question, tokens, etc.
+        """
+        try:
+            # Call get_markets without next_cursor to get first page
+            if next_cursor:
+                markets = self.client.get_markets(next_cursor=next_cursor)
+            else:
+                markets = self.client.get_markets()
+            
+            # Handle different return types
+            if isinstance(markets, dict):
+                logger.debug("fetched_markets", count=len(markets.get("data", [])))
+                return markets
+            else:
+                # If it's not a dict, wrap it
+                return {"data": markets if isinstance(markets, list) else []}
+        except Exception as e:
+            logger.error(
+                "failed_to_fetch_markets",
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    async def get_order_book(self, token_id: str) -> Dict[str, Any]:
+        """
+        Get order book for a specific token.
+        
+        Args:
+            token_id: Token ID to fetch order book for
+            
+        Returns:
+            Order book with bids and asks
+        """
+        try:
+            order_book = self.client.get_order_book(token_id)
+            logger.debug(
+                "fetched_order_book",
+                token_id=token_id,
+                bids=len(order_book.get("bids", [])),
+                asks=len(order_book.get("asks", []))
+            )
+            return order_book
+        except Exception as e:
+            logger.error(
+                "failed_to_fetch_order_book",
+                token_id=token_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    async def get_last_trade_price(self, token_id: str) -> Optional[float]:
+        """
+        Get last trade price for a token.
+        
+        Args:
+            token_id: Token ID to fetch price for
+            
+        Returns:
+            Last trade price or None if no trades
+        """
+        try:
+            trades = self.client.get_last_trade_price(token_id)
+            if trades:
+                price = float(trades)
+                logger.debug("fetched_last_price", token_id=token_id, price=price)
+                return price
+            return None
+        except Exception as e:
+            logger.error(
+                "failed_to_fetch_last_price",
+                token_id=token_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    async def place_market_order(
+        self,
+        token_id: str,
+        side: str,
+        amount: float,
+    ) -> Dict[str, Any]:
+        """
+        Place a market order (immediate execution).
+        
+        Args:
+            token_id: Token ID to trade
+            side: "BUY" or "SELL"
+            amount: Amount in USD to trade
+            
+        Returns:
+            Order response with order ID and status
+        """
+        try:
+            order_args = MarketOrderArgs(
+                token_id=token_id,
+                amount=amount,
+                side=side,
+            )
+            
+            logger.info(
+                "placing_market_order",
+                token_id=token_id,
+                side=side,
+                amount=amount
+            )
+            
+            response = self.client.create_market_order(order_args)
+            
+            logger.info(
+                "market_order_placed",
+                token_id=token_id,
+                side=side,
+                amount=amount,
+                order_id=response.get("orderID")
+            )
+            
+            return response
+        except Exception as e:
+            logger.error(
+                "failed_to_place_market_order",
+                token_id=token_id,
+                side=side,
+                amount=amount,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    async def place_limit_order(
+        self,
+        token_id: str,
+        side: str,
+        price: float,
+        size: float,
+    ) -> Dict[str, Any]:
+        """
+        Place a limit order.
+        
+        Args:
+            token_id: Token ID to trade
+            side: "BUY" or "SELL"
+            price: Limit price
+            size: Order size
+            
+        Returns:
+            Order response with order ID and status
+        """
+        try:
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=side,
+            )
+            
+            logger.info(
+                "placing_limit_order",
+                token_id=token_id,
+                side=side,
+                price=price,
+                size=size
+            )
+            
+            response = self.client.create_order(order_args)
+            
+            logger.info(
+                "limit_order_placed",
+                token_id=token_id,
+                side=side,
+                price=price,
+                size=size,
+                order_id=response.get("orderID")
+            )
+            
+            return response
+        except Exception as e:
+            logger.error(
+                "failed_to_place_limit_order",
+                token_id=token_id,
+                side=side,
+                price=price,
+                size=size,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    async def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        """
+        Cancel an open order.
+        
+        Args:
+            order_id: Order ID to cancel
+            
+        Returns:
+            Cancellation response
+        """
+        try:
+            logger.info("cancelling_order", order_id=order_id)
+            response = self.client.cancel(order_id)
+            logger.info("order_cancelled", order_id=order_id)
+            return response
+        except Exception as e:
+            logger.error(
+                "failed_to_cancel_order",
+                order_id=order_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    async def get_open_orders(self) -> List[Dict[str, Any]]:
+        """
+        Get all open orders for the authenticated account.
+        
+        Returns:
+            List of open orders
+        """
+        try:
+            orders = self.client.get_orders()
+            logger.debug("fetched_open_orders", count=len(orders))
+            return orders
+        except Exception as e:
+            logger.error(
+                "failed_to_fetch_open_orders",
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+    
+    def disconnect(self) -> None:
+        """Disconnect from Polymarket API."""
+        self._client = None
+        logger.info("polymarket_client_disconnected")

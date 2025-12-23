@@ -1,0 +1,14 @@
+# Core Trading Library
+py-clob-client==0.34.0
+
+# Async HTTP Client
+aiohttp==3.13.2
+
+# Configuration & Environment
+python-dotenv==1.2.1
+
+# Data Validation & Type Safety
+pydantic==2.12.5
+
+# Structured Logging
+structlog==25.5.0
