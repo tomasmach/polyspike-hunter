@@ -54,9 +54,9 @@ def get_api_credentials():
         print("=" * 70)
         print()
         print("💡 You can add these to your .env file for L2 authentication:")
-        print(f"   POLYMARKET_API_KEY={api_creds.api_key}")
-        print(f"   POLYMARKET_SECRET={api_creds.api_secret}")
-        print(f"   POLYMARKET_PASSPHRASE={api_creds.api_passphrase}")
+        print(f"   CLOB_API_KEY={api_creds.api_key}")
+        print(f"   CLOB_SECRET={api_creds.api_secret}")
+        print(f"   CLOB_PASSPHRASE={api_creds.api_passphrase}")
         print()
         
         return api_creds

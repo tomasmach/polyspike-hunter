@@ -155,11 +155,20 @@ class PolymarketClient:
             Last trade price or None if no trades
         """
         try:
-            trades = self.client.get_last_trade_price(token_id)
-            if trades:
-                price = float(trades)
-                logger.debug("fetched_last_price", token_id=token_id, price=price)
-                return price
+            result = self.client.get_last_trade_price(token_id)
+            if result:
+                # API returns dict with 'price' key
+                if isinstance(result, dict):
+                    price_str = result.get('price')
+                    if price_str:
+                        price = float(price_str)
+                        logger.debug("fetched_last_price", token_id=token_id, price=price)
+                        return price
+                else:
+                    # Fallback if API changes to return string/float directly
+                    price = float(result)
+                    logger.debug("fetched_last_price", token_id=token_id, price=price)
+                    return price
             return None
         except Exception as e:
             logger.error(

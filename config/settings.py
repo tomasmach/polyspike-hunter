@@ -115,9 +115,9 @@ class Settings(BaseModel):
                     "POLYMARKET_FUNDER",
                     "0x0000000000000000000000000000000000000000"
                 ),
-                api_key=os.getenv("POLYMARKET_API_KEY"),
-                secret=os.getenv("POLYMARKET_SECRET"),
-                passphrase=os.getenv("POLYMARKET_PASSPHRASE"),
+                api_key=os.getenv("CLOB_API_KEY"),
+                secret=os.getenv("CLOB_SECRET"),
+                passphrase=os.getenv("CLOB_PASSPHRASE"),
             ),
             trading=TradingConfig(
                 poll_interval=float(os.getenv("POLL_INTERVAL", "1.0")),
