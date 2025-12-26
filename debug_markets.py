@@ -102,6 +102,9 @@ async def main():
     except Exception as e:
         logger.error("debug_failed", error=str(e), error_type=type(e).__name__)
         raise
+    finally:
+        if 'client' in locals() and client._client is not None:
+            client.disconnect()
 
 
 if __name__ == "__main__":
