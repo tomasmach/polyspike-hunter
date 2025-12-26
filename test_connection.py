@@ -64,9 +64,8 @@ async def test_connection():
         )
         return False
     except Exception as e:
-        logger.excepion(
+        logger.exception(
             "test_failed",
-            error_type=type(e).__name__
         )
         return False
     
