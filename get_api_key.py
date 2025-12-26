@@ -15,7 +15,11 @@ def get_api_credentials():
     
     # Load configuration from .env
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
-    chain_id = int(os.getenv("POLYMARKET_CHAIN_ID", "137"))
+    try:
+        chain_id = int(os.getenv("POLYMARKET_CHAIN_ID", "137"))
+    except ValueError:
+        print("ERROR: POLYMARKET_CHAIN_ID must be a valid integer")
+        return None
     host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
     funder = os.getenv("POLYMARKET_FUNDER", "0x0000000000000000000000000000000000000000")
     
