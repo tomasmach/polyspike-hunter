@@ -79,6 +79,48 @@ class TradingConfig(BaseModel):
     )
 
 
+class PaperTradingConfig(BaseModel):
+    """Paper trading configuration."""
+    
+    enabled: bool = Field(default=True, description="Enable paper trading mode")
+    initial_balance: float = Field(
+        default=100.0,
+        description="Initial balance for paper trading",
+        gt=0.0
+    )
+    min_position_size: float = Field(
+        default=1.0,
+        description="Minimum position size",
+        gt=0.0
+    )
+    max_open_positions: int = Field(
+        default=10,
+        description="Maximum concurrent positions",
+        gt=0
+    )
+
+
+class MarketMonitoringConfig(BaseModel):
+    """Market monitoring configuration."""
+    
+    strategy: str = Field(default="volume", description="Market selection strategy")
+    max_monitored_markets: int = Field(
+        default=50,
+        description="Maximum markets to monitor",
+        gt=0
+    )
+    min_market_volume: float = Field(
+        default=0.0,
+        description="Minimum market volume filter",
+        ge=0.0
+    )
+    price_history_window: int = Field(
+        default=60,
+        description="Price history window in seconds",
+        gt=0
+    )
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
     
@@ -101,6 +143,8 @@ class Settings(BaseModel):
     
     polymarket: PolymarketConfig
     trading: TradingConfig
+    paper_trading: PaperTradingConfig
+    monitoring: MarketMonitoringConfig
     logging: LoggingConfig
     
     @classmethod
@@ -121,11 +165,23 @@ class Settings(BaseModel):
             ),
             trading=TradingConfig(
                 poll_interval=float(os.getenv("POLL_INTERVAL", "1.0")),
-                spike_threshold=float(os.getenv("SPIKE_THRESHOLD", "0.02")),
+                spike_threshold=float(os.getenv("SPIKE_THRESHOLD", "0.03")),
                 position_size=float(os.getenv("POSITION_SIZE", "5.0")),
                 stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0.02")),
                 take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.04")),
                 max_drawdown=float(os.getenv("MAX_DRAWDOWN", "50.0")),
+            ),
+            paper_trading=PaperTradingConfig(
+                enabled=os.getenv("PAPER_TRADING", "true").lower() == "true",
+                initial_balance=float(os.getenv("INITIAL_BALANCE", "100.0")),
+                min_position_size=float(os.getenv("MIN_POSITION_SIZE", "1.0")),
+                max_open_positions=int(os.getenv("MAX_OPEN_POSITIONS", "10")),
+            ),
+            monitoring=MarketMonitoringConfig(
+                strategy=os.getenv("MONITOR_STRATEGY", "volume"),
+                max_monitored_markets=int(os.getenv("MAX_MONITORED_MARKETS", "50")),
+                min_market_volume=float(os.getenv("MIN_MARKET_VOLUME", "1000.0")),
+                price_history_window=int(os.getenv("PRICE_HISTORY_WINDOW", "60")),
             ),
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO"),

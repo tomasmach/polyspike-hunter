@@ -107,13 +107,17 @@ class MarketSelector:
         # Build list of (token_id, volume) pairs
         market_volumes: List[tuple[str, float]] = []
         
+        active_count = 0
+        volume_filtered = 0
+        
         for market in all_markets:
             if not market.get("active", False):
                 continue
             
-            volume = float(market.get("volume", 0) or 0)
-            if volume < self.min_volume:
-                continue
+            active_count += 1
+            
+            # Get volume - try multiple fields
+            volume = float(market.get("volume", 0) or market.get("volume24hr", 0) or 0)
             
             tokens = market.get("tokens", [])
             for token in tokens:
@@ -121,11 +125,44 @@ class MarketSelector:
                 if token_id:
                     market_volumes.append((token_id, volume))
         
+        logger.info(
+            "market_scan_stats",
+            total_markets=len(all_markets),
+            active_markets=active_count,
+            total_tokens=len(market_volumes)
+        )
+        
         # Sort by volume descending
         market_volumes.sort(key=lambda x: x[1], reverse=True)
         
-        # Take top N
-        selected = [token_id for token_id, _ in market_volumes[:self.max_markets]]
+        # If we have markets but none meet volume threshold, just take top N anyway
+        if len(market_volumes) > 0:
+            # Filter by min volume first if min_volume > 0
+            if self.min_volume > 0:
+                filtered = [(t, v) for t, v in market_volumes if v >= self.min_volume]
+            else:
+                # If min_volume is 0, take all markets
+                filtered = market_volumes
+            
+            if len(filtered) == 0:
+                # No markets meet volume threshold, take top N regardless
+                logger.warning(
+                    "no_markets_meet_volume_threshold",
+                    min_volume=self.min_volume,
+                    using_top_markets=self.max_markets,
+                    message="Taking markets regardless of volume"
+                )
+                selected = [token_id for token_id, _ in market_volumes[:self.max_markets]]
+            else:
+                # Use filtered markets
+                selected = [token_id for token_id, _ in filtered[:self.max_markets]]
+                logger.info(
+                    "using_filtered_markets",
+                    filtered_count=len(filtered),
+                    selected_count=len(selected)
+                )
+        else:
+            selected = []
         
         logger.info(
             "markets_selected_by_volume",

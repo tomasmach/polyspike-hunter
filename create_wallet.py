@@ -13,8 +13,8 @@ def create_new_wallet():
     print("POLYMARKET WALLET GENERATOR")
     print("=" * 70)
     print()
-    print("⚠️  WARNING: This creates a NEW wallet for testing!")
-    print("⚠️  Save the private key securely - you cannot recover it later!")
+    print("WARNING: This creates a NEW wallet for testing!")
+    print("Save the private key securely - you cannot recover it later!")
     print()
     
     # Generate random private key
@@ -23,7 +23,7 @@ def create_new_wallet():
     # Create account from private key
     account = Account.from_key(private_key)
     
-    print("✅ New wallet created!")
+    print("New wallet created!")
     print()
     print("=" * 70)
     print("WALLET DETAILS (SAVE THIS SECURELY!)")
@@ -32,7 +32,7 @@ def create_new_wallet():
     print(f"Private Key: {private_key}")
     print("=" * 70)
     print()
-    print("📝 NEXT STEPS:")
+    print("NEXT STEPS:")
     print()
     print("1. Add this private key to your .env file:")
     print(f"   POLYMARKET_PRIVATE_KEY={private_key}")
@@ -50,7 +50,7 @@ def create_new_wallet():
     print()
     print("=" * 70)
     print()
-    print("⚠️  SECURITY WARNINGS:")
+    print("SECURITY WARNINGS:")
     print("   • NEVER share your private key with anyone!")
     print("   • This is a TEST wallet - don't store large amounts!")
     print("   • Private key = full access to your funds!")
@@ -65,7 +65,7 @@ def create_new_wallet():
 if __name__ == "__main__":
     wallet = create_new_wallet()
     
-    print("💡 TIP: To use with Polymarket, you need:")
+    print("TIP: To use with Polymarket, you need:")
     print("   1. USDC on Polygon (for trading)")
     print("   2. MATIC on Polygon (for gas fees)")
     print()

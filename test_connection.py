@@ -79,6 +79,6 @@ if __name__ == "__main__":
     logger.info("starting_connection_test")
     success = asyncio.run(test_connection())
     if success:
-        logger.info("✅ All tests passed! Configuration is correct.")
+        logger.info("All tests passed! Configuration is correct.")
     else:
-        logger.error("❌ Tests failed. Check configuration and API keys.")
+        logger.error("Tests failed. Check configuration and API keys.")

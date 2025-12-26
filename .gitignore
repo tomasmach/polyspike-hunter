@@ -1,6 +1,11 @@
 #Project specific
 AGENTS.md
 
+# Trading data
+data/sessions/
+*.csv
+*.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

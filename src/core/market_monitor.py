@@ -121,13 +121,25 @@ class MarketMonitor:
             for token_id in self._monitored_tokens
         }
         
-        logger.info(
-            "markets_initialized",
-            monitored_count=len(self._monitored_tokens)
-        )
+        if len(self._monitored_tokens) == 0:
+            logger.error(
+                "no_markets_selected",
+                total_available=len(all_markets),
+                strategy=self.selector.strategy.value
+            )
+            logger.error("No markets to monitor! Check your configuration.")
+        else:
+            logger.info(
+                "markets_initialized",
+                monitored_count=len(self._monitored_tokens)
+            )
     
     async def _poll_loop(self) -> None:
         """Main polling loop."""
+        if len(self._monitored_tokens) == 0:
+            logger.warning("no_markets_to_monitor_exiting")
+            return
+        
         while self._running:
             loop_start = asyncio.get_event_loop().time()
             
