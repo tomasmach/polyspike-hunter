@@ -98,11 +98,11 @@ class PolymarketClient:
             Market data including condition_id, question, tokens, etc.
         """
         try:
-            # Call get_markets without next_cursor to get first page
+            # Call get_markets (blocking, run in executor)
             if next_cursor:
-                markets = self.client.get_markets(next_cursor=next_cursor)
+                markets = await asyncio.to_thread(self.client.get_markets, next_cursor=next_cursor)
             else:
-                markets = self.client.get_markets()
+                markets = await asyncio.to_thread(self.client.get_markets)
             
             # Handle different return types
             if isinstance(markets, dict):
@@ -130,7 +130,8 @@ class PolymarketClient:
             Order book with bids and asks
         """
         try:
-            order_book = self.client.get_order_book(token_id)
+            # Run blocking call in executor
+            order_book = await asyncio.to_thread(self.client.get_order_book, token_id)
             logger.debug(
                 "fetched_order_book",
                 token_id=token_id,
@@ -158,7 +159,8 @@ class PolymarketClient:
             Last trade price or None if no trades
         """
         try:
-            result = self.client.get_last_trade_price(token_id)
+            # Run blocking call in executor
+            result = await asyncio.to_thread(self.client.get_last_trade_price, token_id)
             if result:
                 # API returns dict with 'price' key
                 if isinstance(result, dict):
@@ -213,7 +215,8 @@ class PolymarketClient:
                 amount=amount
             )
             
-            response = self.client.create_market_order(order_args)
+            # Run blocking call in executor
+            response = await asyncio.to_thread(self.client.create_market_order, order_args)
             
             logger.info(
                 "market_order_placed",
@@ -270,7 +273,8 @@ class PolymarketClient:
                 size=size
             )
             
-            response = self.client.create_order(order_args)
+            # Run blocking call in executor
+            response = await asyncio.to_thread(self.client.create_order, order_args)
             
             logger.info(
                 "limit_order_placed",
@@ -306,7 +310,8 @@ class PolymarketClient:
         """
         try:
             logger.info("cancelling_order", order_id=order_id)
-            response = self.client.cancel(order_id)
+            # Run blocking call in executor
+            response = await asyncio.to_thread(self.client.cancel, order_id)
             logger.info("order_cancelled", order_id=order_id)
             return response
         except Exception as e:
@@ -326,7 +331,8 @@ class PolymarketClient:
             List of open orders
         """
         try:
-            orders = self.client.get_orders()
+            # Run blocking call in executor
+            orders = await asyncio.to_thread(self.client.get_orders)
             logger.debug("fetched_open_orders", count=len(orders))
             return orders
         except Exception as e:
