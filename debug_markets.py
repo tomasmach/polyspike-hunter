@@ -28,7 +28,7 @@ async def main():
         
         # Initialize client
         client = PolymarketClient(settings.polymarket)
-        client.connect()
+        await client.connect()
         
         print("\nFetching markets from Polymarket API...\n")
         

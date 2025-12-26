@@ -33,7 +33,7 @@ async def test_connection():
         
         # Connect to API
         logger.info("connecting_to_polymarket_api")
-        client.connect()
+        await client.connect()
         
         # Test: Fetch markets
         logger.info("testing_market_fetch")

@@ -4,6 +4,7 @@ Handles connection to Polymarket API using py-clob-client.
 """
 
 from typing import Optional, Dict, Any, List
+import asyncio
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, ApiCreds
 import structlog
@@ -34,28 +35,30 @@ class PolymarketClient:
             chain_id=config.chain_id
         )
     
-    def connect(self) -> None:
+    async def connect(self) -> None:
         """
         Connect to Polymarket CLOB API.
         Creates authenticated client instance.
+        Runs blocking ClobClient construction off the event loop.
         """
         try:
-            # Initialize client with L1 authentication
-            self._client = ClobClient(
+            # Initialize client with L1 authentication (blocking, run in executor)
+            self._client = await asyncio.to_thread(
+                ClobClient,
                 host=self.config.host,
                 key=self.config.private_key,
                 chain_id=self.config.chain_id,
                 funder=self.config.funder,
             )
             
-            # If L2 credentials are provided, set them
+            # If L2 credentials are provided, set them (blocking, run in executor)
             if self.config.api_key and self.config.secret and self.config.passphrase:
                 api_creds = ApiCreds(
                     api_key=self.config.api_key,
                     api_secret=self.config.secret,
                     api_passphrase=self.config.passphrase,
                 )
-                self._client.set_api_creds(api_creds)
+                await asyncio.to_thread(self._client.set_api_creds, api_creds)
                 logger.info(
                     "polymarket_client_connected",
                     host=self.config.host,

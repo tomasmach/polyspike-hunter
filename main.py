@@ -127,7 +127,7 @@ class PolySpikeHunter:
             
             # Connect to Polymarket
             logger.info("connecting_to_polymarket")
-            self.client.connect()
+            await self.client.connect()
             
             # Register price update callback
             self.monitor.on_price_update(self._handle_price_update)

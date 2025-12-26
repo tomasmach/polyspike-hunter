@@ -12,3 +12,6 @@ pydantic==2.12.5
 
 # Structured Logging
 structlog==25.5.0
+
+# Ethereum Account Tools
+eth-account==0.13.4

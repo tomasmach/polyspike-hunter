@@ -44,7 +44,7 @@ async def main():
         # Initialize client
         logger.info("initializing_client")
         client = PolymarketClient(settings.polymarket)
-        client.connect()
+        await client.connect()
         
         # Create market selector (start with random for testing)
         logger.info("creating_market_selector", strategy="random", max_markets=5)
