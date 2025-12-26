@@ -3,7 +3,7 @@ Market selection logic for monitoring.
 Filters and selects which markets to track based on volume, themes, etc.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import random
 import structlog
 from enum import Enum
@@ -105,7 +105,7 @@ class MarketSelector:
     def _select_by_volume(self, all_markets: List[Dict[str, Any]]) -> List[str]:
         """Select markets by highest 24h volume."""
         # Build list of (token_id, volume) pairs
-        market_volumes: List[tuple[str, float]] = []
+        market_volumes: List[Tuple[str, float]] = []
         
         active_count = 0
         volume_filtered = 0
