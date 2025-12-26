@@ -326,11 +326,10 @@ async def main():
     bot = PolySpikeHunter()
     
     # Setup signal handlers for graceful shutdown
-    def signal_handler(sig, frame):
+    def signal_handler(sig, _frame):
         logger.info("interrupt_received", signal=sig)
-        # Cancel all tasks
-        for task in asyncio.all_tasks():
-            task.cancel()
+        # Signal the bot to stop gracefully
+        bot._running = False
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
