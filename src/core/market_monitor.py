@@ -164,7 +164,7 @@ class MarketMonitor:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Log errors
-        for token_id, result in zip(self._monitored_tokens, results):
+        for token_id, result in zip(self._monitored_tokens, results, strict=True):
             if isinstance(result, Exception):
                 logger.error(
                     "poll_market_error",
