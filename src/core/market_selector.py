@@ -108,7 +108,6 @@ class MarketSelector:
         market_volumes: List[Tuple[str, float]] = []
         
         active_count = 0
-        volume_filtered = 0
         
         for market in all_markets:
             if not market.get("active", False):

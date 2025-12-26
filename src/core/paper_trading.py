@@ -116,6 +116,12 @@ class PaperTradingEngine:
     """
     Paper trading engine that simulates order execution.
     Maintains fake balance and tracks positions without real money.
+    
+    Balance Accounting Model:
+    - self.balance: Total cash (includes locked capital in open positions)
+    - Available balance: self.balance - sum(position.size) for all open positions
+    - On position open: Capital is "locked" (no change to balance)
+    - On position close: Only P&L is added/subtracted to balance (capital unlocks)
     """
     
     def __init__(self, initial_balance: float = 100.0):
@@ -145,7 +151,13 @@ class PaperTradingEngine:
         )
     
     def get_available_balance(self) -> float:
-        """Get balance available for trading (excluding locked in positions)."""
+        """
+        Get balance available for trading (excluding locked in positions).
+        
+        Balance Model: self.balance represents total cash, positions lock capital.
+        - When opening: position size is locked (subtracted from available balance)
+        - When closing: only P&L is added/subtracted to balance (position unlocks)
+        """
         locked = sum(pos.size for pos in self.positions.values())
         return self.balance - locked
     
@@ -296,8 +308,8 @@ class PaperTradingEngine:
         pnl = position.get_pnl(exit_price)
         pnl_pct = position.get_pnl_pct(exit_price)
         
-        # Update balance
-        self.balance += position.size + pnl
+        # Update balance - only add/subtract P&L (position size was never subtracted from balance)
+        self.balance += pnl
         
         # Update statistics
         self.total_pnl += pnl
