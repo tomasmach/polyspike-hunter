@@ -64,6 +64,8 @@ class Position:
     
     def get_pnl(self, current_price: float) -> float:
         """Calculate current P&L."""
+        if self.entry_price == 0:
+            return 0.0
         return (current_price - self.entry_price) * (self.size / self.entry_price)
     
     def get_pnl_pct(self, current_price: float) -> float:
