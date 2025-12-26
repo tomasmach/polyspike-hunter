@@ -66,7 +66,7 @@ def get_api_credentials():
         return api_creds
         
     except Exception as e:
-        print(f"ERROR: Failed to generate API credentials")
+        print("ERROR: Failed to generate API credentials")
         print(f"   Error type: {type(e).__name__}")
         print(f"   Error message: {str(e)}")
         print()
