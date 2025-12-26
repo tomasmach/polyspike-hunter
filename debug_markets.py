@@ -58,19 +58,19 @@ async def main():
             if tokens and len(tokens) > 0:
                 with_tokens += 1
         
-        print(f"Market Analysis (first 100):")
+        print("Market Analysis (first 100):")
         print(f"  Active markets:        {active_count}")
         print(f"  Markets with volume:   {with_volume}")
         print(f"  Markets with tokens:   {with_tokens}")
         
         if volume_samples:
             volume_samples.sort(reverse=True)
-            print(f"\nVolume samples (top 10):")
+            print("\nVolume samples (top 10):")
             for i, vol in enumerate(volume_samples[:10], 1):
                 print(f"  {i}. ${vol:,.2f}")
         
         # Show sample active market with tokens
-        print(f"\nSample active markets with tokens:\n")
+        print("\nSample active markets with tokens:\n")
         count = 0
         for market in all_markets:
             if not market.get("active", False):
