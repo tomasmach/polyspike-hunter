@@ -7,6 +7,7 @@ import os
 import json
 import csv
 import time
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -18,6 +19,14 @@ logger = structlog.get_logger(__name__)
 class SessionReporter:
     """
     Handles session reporting, including file-based logging and statistics.
+    
+    Uses atomic file writes (temp file + rename) for JSON files to prevent data
+    corruption if the process crashes during write. This ensures files are never
+    left in a half-written state. For paper trading this is good practice; for
+    production real-money trading, atomic writes are critical for data integrity.
+    
+    Note: CSV market data logs use append-only writes which are naturally atomic
+    at the line level, so they don't need the temp file pattern.
     """
     
     def __init__(
@@ -82,7 +91,10 @@ class SessionReporter:
     
     def log_trade(self, trade_data: Dict[str, Any]) -> None:
         """
-        Log a completed trade to JSON file.
+        Log a completed trade to JSON file using atomic write for crash safety.
+        
+        Uses temp file + rename pattern to ensure file is never left in inconsistent state.
+        For production systems, this prevents data corruption if process crashes during write.
         
         Args:
             trade_data: Trade data dictionary
@@ -95,9 +107,25 @@ class SessionReporter:
             # Append new trade
             data["trades"].append(trade_data)
             
-            # Write back
-            with open(self.trades_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            # Atomic write: write to temp file then rename
+            # This ensures the file is never left in a half-written state
+            fd, temp_path = tempfile.mkstemp(
+                dir=self.session_dir,
+                prefix='.trades_',
+                suffix='.tmp'
+            )
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(data, f, indent=2)
+                # Atomic operation on POSIX systems
+                os.replace(temp_path, self.trades_file)
+            except:
+                # Clean up temp file on error
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+                raise
             
             logger.debug("trade_logged", trade_id=trade_data.get("trade_id"))
             
@@ -146,7 +174,7 @@ class SessionReporter:
     
     def save_session_summary(self, stats: Dict[str, Any]) -> None:
         """
-        Save session summary statistics to JSON.
+        Save session summary statistics to JSON using atomic write.
         
         Args:
             stats: Statistics dictionary
@@ -160,8 +188,24 @@ class SessionReporter:
                 "statistics": stats
             }
             
-            with open(self.summary_file, 'w') as f:
-                json.dump(summary, f, indent=2)
+            # Atomic write: write to temp file then rename
+            fd, temp_path = tempfile.mkstemp(
+                dir=self.session_dir,
+                prefix='.summary_',
+                suffix='.tmp'
+            )
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(summary, f, indent=2)
+                # Atomic operation on POSIX systems
+                os.replace(temp_path, self.summary_file)
+            except:
+                # Clean up temp file on error
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+                raise
             
             logger.info("session_summary_saved", file=str(self.summary_file))
             
