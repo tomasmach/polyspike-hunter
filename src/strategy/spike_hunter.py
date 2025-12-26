@@ -107,21 +107,12 @@ class SpikeHunterStrategy:
                 entry_price=position_entry_price
             )
         
-        # If no position, check entry conditions
-        if not has_position:
-            return self._check_entry_conditions(
-                update=update,
-                tracker=tracker,
-                current_time=current_time
+        # No position, check entry conditions
+        return self._check_entry_conditions(
+            update=update,
+            tracker=tracker,
+            current_time=current_time
             )
-        
-        return TradingSignal(
-            signal_type=SignalType.NONE,
-            token_id=update.token_id,
-            price=update.price,
-            timestamp=update.timestamp,
-            reason="no_action"
-        )
     
     def _check_entry_conditions(
         self,
