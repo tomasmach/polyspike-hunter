@@ -58,16 +58,14 @@ async def test_connection():
         logger.info("test_completed_successfully")
         
     except ValueError as e:
-        logger.error(
+        logger.exception(
             "configuration_error",
-            error=str(e),
             hint="Make sure POLYMARKET_PRIVATE_KEY is set in .env file"
         )
         return False
     except Exception as e:
-        logger.error(
+        logger.excepion(
             "test_failed",
-            error=str(e),
             error_type=type(e).__name__
         )
         return False
