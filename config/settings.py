@@ -188,7 +188,7 @@ class Settings(BaseModel):
                 max_monitored_markets=int(os.getenv("MAX_MONITORED_MARKETS", "50")),
                 min_market_volume=float(os.getenv("MIN_MARKET_VOLUME", "1000.0")),
                 price_history_window=int(os.getenv("PRICE_HISTORY_WINDOW", "60")),
-                max_concurrent_requests=int(os.getenv("MAX_CONCURRENT_REQUESTS", "10")),
+                max_concurrent_requests=int(os.getenv("MAX_CONCURRENT_REQUESTS", "40")),
             ),
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO"),
