@@ -178,7 +178,6 @@ class PolymarketClient:
             return None
         except Exception as e:
             # Log with more details including the cause
-            import traceback
             error_details = {
                 "token_id": token_id,
                 "error": str(e),
