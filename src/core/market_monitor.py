@@ -29,37 +29,42 @@ class MarketMonitor:
     Monitors multiple markets via async polling.
     Tracks price history and emits price update events.
     """
-    
+
     def __init__(
         self,
         client: PolymarketClient,
         selector: MarketSelector,
         poll_interval: float = 1.0,
         price_history_window: int = 60,
+        max_concurrent_requests: int = 10,
     ):
         """
         Initialize market monitor.
-        
+
         Args:
             client: Polymarket CLOB client
             selector: Market selection logic
             poll_interval: Seconds between polls
             price_history_window: Seconds of price history to maintain
+            max_concurrent_requests: Maximum concurrent API requests (default: 10)
         """
         self.client = client
         self.selector = selector
         self.poll_interval = poll_interval
         self.price_history_window = price_history_window
-        
+        self.max_concurrent_requests = max_concurrent_requests
+
         self._running = False
         self._monitored_tokens: List[str] = []
         self._trackers: Dict[str, PriceTracker] = {}
         self._callbacks: List[Callable[[PriceUpdate], None]] = []
-        
+        self._semaphore: Optional[asyncio.Semaphore] = None
+
         logger.info(
             "market_monitor_initialized",
             poll_interval=poll_interval,
-            price_history_window=price_history_window
+            price_history_window=price_history_window,
+            max_concurrent_requests=max_concurrent_requests
         )
     
     def on_price_update(self, callback: Callable[[PriceUpdate], None]) -> None:
@@ -76,18 +81,22 @@ class MarketMonitor:
         if self._running:
             logger.warning("monitor_already_running")
             return
-        
+
         logger.info("market_monitor_starting")
         self._running = True
-        
+
+        # Initialize semaphore for concurrency control
+        self._semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+
         # Select markets to monitor
         await self._initialize_markets()
-        
+
         # Start polling loop
         try:
             await self._poll_loop()
         except asyncio.CancelledError:
             logger.info("monitor_cancelled")
+            raise  # Re-raise to propagate cancellation
         except Exception as e:
             logger.error(
                 "monitor_error",
@@ -176,48 +185,51 @@ class MarketMonitor:
     async def _poll_market(self, token_id: str) -> None:
         """
         Poll single market and update tracker.
-        
+
         Args:
             token_id: Token ID to poll
         """
-        try:
-            # Fetch current price
-            price = await self.client.get_last_trade_price(token_id)
-            
-            if price is None:
-                logger.debug("no_price_data", token_id=token_id)
+        # Use semaphore to limit concurrent requests
+        async with self._semaphore:
+            try:
+                # Fetch current price
+                price = await self.client.get_last_trade_price(token_id)
+
+                if price is None:
+                    logger.debug("no_price_data", token_id=token_id)
+                    return
+
+                # Update tracker
+                tracker = self._trackers.get(token_id)
+                if tracker is None:
+                    return
+
+                import time
+                timestamp = time.time()
+                tracker.add_price(price, timestamp)
+
+                # Calculate price change
+                price_change_pct = tracker.get_price_change_pct(window_seconds=10)
+
+                # Emit price update event
+                update = PriceUpdate(
+                    token_id=token_id,
+                    price=price,
+                    timestamp=timestamp,
+                    price_change_pct=price_change_pct
+                )
+
+                self._emit_price_update(update)
+
+            except Exception as e:
+                logger.error(
+                    "poll_market_failed",
+                    token_id=token_id,
+                    error=str(e),
+                    error_type=type(e).__name__
+                )
+                # Don't re-raise - allow other markets to continue
                 return
-            
-            # Update tracker
-            tracker = self._trackers.get(token_id)
-            if tracker is None:
-                return
-            
-            import time
-            timestamp = time.time()
-            tracker.add_price(price, timestamp)
-            
-            # Calculate price change
-            price_change_pct = tracker.get_price_change_pct(window_seconds=10)
-            
-            # Emit price update event
-            update = PriceUpdate(
-                token_id=token_id,
-                price=price,
-                timestamp=timestamp,
-                price_change_pct=price_change_pct
-            )
-            
-            self._emit_price_update(update)
-            
-        except Exception as e:
-            logger.error(
-                "poll_market_failed",
-                token_id=token_id,
-                error=str(e),
-                error_type=type(e).__name__
-            )
-            raise
     
     def _emit_price_update(self, update: PriceUpdate) -> None:
         """Emit price update to all registered callbacks."""
