@@ -102,7 +102,7 @@ class PaperTradingConfig(BaseModel):
 
 class MarketMonitoringConfig(BaseModel):
     """Market monitoring configuration."""
-    
+
     strategy: str = Field(default="volume", description="Market selection strategy")
     max_monitored_markets: int = Field(
         default=50,
@@ -118,6 +118,12 @@ class MarketMonitoringConfig(BaseModel):
         default=60,
         description="Price history window in seconds",
         gt=0
+    )
+    max_concurrent_requests: int = Field(
+        default=40,
+        description="Maximum concurrent API requests to avoid rate limiting",
+        gt=0,
+        le=100
     )
 
 
@@ -182,6 +188,7 @@ class Settings(BaseModel):
                 max_monitored_markets=int(os.getenv("MAX_MONITORED_MARKETS", "50")),
                 min_market_volume=float(os.getenv("MIN_MARKET_VOLUME", "1000.0")),
                 price_history_window=int(os.getenv("PRICE_HISTORY_WINDOW", "60")),
+                max_concurrent_requests=int(os.getenv("MAX_CONCURRENT_REQUESTS", "40")),
             ),
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO"),

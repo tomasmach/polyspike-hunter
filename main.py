@@ -97,6 +97,7 @@ class PolySpikeHunter:
             selector=self.market_selector,
             poll_interval=self.settings.trading.poll_interval,
             price_history_window=self.settings.monitoring.price_history_window,
+            max_concurrent_requests=self.settings.monitoring.max_concurrent_requests,
         )
         
         # Initialize reporting
@@ -106,48 +107,38 @@ class PolySpikeHunter:
         
         # Track current prices for equity calculation
         self._current_prices: Dict[str, float] = {}
-        
-        # Running flag
+
+        # Running and shutdown flags
         self._running = False
-        
+        self._shutdown_complete = False
+
         logger.info("PolySpikeHunter initialized successfully")
     
     async def start(self) -> None:
         """Start the trading bot."""
-        try:
-            logger.info("Starting PolySpikeHunter...")
-            logger.info(
-                "configuration",
-                paper_trading=self.settings.paper_trading.enabled,
-                initial_balance=f"${self.settings.paper_trading.initial_balance:.2f}",
-                spike_threshold=f"{self.settings.trading.spike_threshold*100:.1f}%",
-                position_size=f"${self.settings.trading.position_size:.2f}",
-                monitored_markets=self.settings.monitoring.max_monitored_markets
-            )
-            
-            # Connect to Polymarket
-            logger.info("connecting_to_polymarket")
-            await self.client.connect()
-            
-            # Register price update callback
-            self.monitor.on_price_update(self._handle_price_update)
-            
-            # Set running flag
-            self._running = True
-            
-            # Start monitoring
-            logger.info("Bot is now running. Press Ctrl+C to stop.")
-            await self.monitor.start()
-            
-        except Exception as e:
-            logger.error(
-                "bot_error",
-                error=str(e),
-                error_type=type(e).__name__
-            )
-            raise
-        finally:
-            await self.shutdown()
+        logger.info("Starting PolySpikeHunter...")
+        logger.info(
+            "configuration",
+            paper_trading=self.settings.paper_trading.enabled,
+            initial_balance=f"${self.settings.paper_trading.initial_balance:.2f}",
+            spike_threshold=f"{self.settings.trading.spike_threshold*100:.1f}%",
+            position_size=f"${self.settings.trading.position_size:.2f}",
+            monitored_markets=self.settings.monitoring.max_monitored_markets
+        )
+
+        # Connect to Polymarket
+        logger.info("connecting_to_polymarket")
+        await self.client.connect()
+
+        # Register price update callback
+        self.monitor.on_price_update(self._handle_price_update)
+
+        # Set running flag
+        self._running = True
+
+        # Start monitoring (this will run until cancelled or error)
+        logger.info("Bot is now running. Press Ctrl+C to stop.")
+        await self.monitor.start()
     
     def _handle_price_update(self, update: PriceUpdate) -> None:
         """
@@ -302,50 +293,65 @@ class PolySpikeHunter:
         )
     
     async def shutdown(self) -> None:
-        """Shutdown bot and cleanup."""
+        """Shutdown bot and cleanup (idempotent)."""
+        if self._shutdown_complete:
+            return
+
         logger.info("Shutting down PolySpikeHunter...")
-        
+
         # Stop monitoring
         await self.monitor.stop()
-        
+
         # Disconnect client
         self.client.disconnect()
-        
+
         # Get final statistics
         stats = self.paper_engine.get_statistics()
-        
+
         # Save and print summary
         self.reporter.save_session_summary(stats)
         self.reporter.print_session_summary(stats)
-        
+
+        self._shutdown_complete = True
         logger.info("Shutdown complete")
 
 
 async def main():
     """Main entry point."""
     bot = PolySpikeHunter()
-    
-    # Setup signal handlers for graceful shutdown
-    def signal_handler(sig, _frame):
+
+    # Create task for bot
+    bot_task = asyncio.create_task(bot.start())
+
+    # Setup async signal handlers for graceful shutdown
+    loop = asyncio.get_running_loop()
+
+    def signal_handler(sig):
         logger.info("interrupt_received", signal=sig)
-        # Signal the bot to stop gracefully
-        bot._running = False
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
+        logger.info("initiating_graceful_shutdown")
+        # Cancel the bot task
+        bot_task.cancel()
+
+    # Register signal handlers
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+
     try:
-        await bot.start()
+        await bot_task
     except asyncio.CancelledError:
-        logger.info("bot_cancelled")
+        logger.info("bot_task_cancelled")
+        # Ensure shutdown is called
+        await bot.shutdown()
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt")
+        await bot.shutdown()
     except Exception as e:
         logger.error(
             "fatal_error",
             error=str(e),
             error_type=type(e).__name__
         )
+        await bot.shutdown()
         raise
 
 

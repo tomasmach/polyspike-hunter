@@ -23,7 +23,7 @@ class PolymarketClient:
     def __init__(self, config: PolymarketConfig):
         """
         Initialize Polymarket client with authentication.
-        
+
         Args:
             config: Polymarket configuration with API credentials
         """
@@ -151,16 +151,17 @@ class PolymarketClient:
     async def get_last_trade_price(self, token_id: str) -> Optional[float]:
         """
         Get last trade price for a token.
-        
+
         Args:
             token_id: Token ID to fetch price for
-            
+
         Returns:
             Last trade price or None if no trades
         """
         try:
-            # Run blocking call in executor
+            # Run blocking call in executor (semaphore handles concurrency limiting)
             result = await asyncio.to_thread(self.client.get_last_trade_price, token_id)
+
             if result:
                 # API returns dict with 'price' key
                 if isinstance(result, dict):
@@ -176,13 +177,28 @@ class PolymarketClient:
                     return price
             return None
         except Exception as e:
-            logger.error(
-                "failed_to_fetch_last_price",
-                token_id=token_id,
-                error=str(e),
-                error_type=type(e).__name__
-            )
-            raise
+            # Log with more details including the cause
+            error_details = {
+                "token_id": token_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
+
+            # If the exception has a cause, log it too
+            if hasattr(e, '__cause__') and e.__cause__:
+                error_details["underlying_error"] = str(e.__cause__)
+                error_details["underlying_error_type"] = type(e.__cause__).__name__
+
+            # For debugging, log the full exception chain
+            if hasattr(e, '__context__') and e.__context__:
+                error_details["context_error"] = str(e.__context__)
+                error_details["context_error_type"] = type(e.__context__).__name__
+
+            # Log traceback for first occurrence only (to avoid spam)
+            logger.error("failed_to_fetch_last_price", **error_details, exc_info=False)
+
+            # Don't re-raise, just return None to allow other markets to continue
+            return None
     
     async def place_market_order(
         self,
