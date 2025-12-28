@@ -6,6 +6,7 @@ Paper trading mode for Polymarket volatility scalping.
 import asyncio
 import signal
 import sys
+import os
 from typing import Dict
 import structlog
 
@@ -28,6 +29,9 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+# Global positions file path (persistent across sessions)
+POSITIONS_FILE = "data/positions.json"
 
 
 class PolySpikeHunter:
@@ -54,7 +58,16 @@ class PolySpikeHunter:
         self.paper_engine = PaperTradingEngine(
             initial_balance=self.settings.paper_trading.initial_balance
         )
-        
+
+        # Load existing positions from previous session
+        logger.info("loading_positions", file_path=POSITIONS_FILE)
+        if self.paper_engine.load_positions(POSITIONS_FILE):
+            logger.info(
+                "positions_restored",
+                count=len(self.paper_engine.positions),
+                balance=f"${self.paper_engine.balance:.2f}"
+            )
+
         # Initialize risk manager
         logger.info("initializing_risk_manager")
         self.risk_manager = RiskManager(
@@ -228,6 +241,10 @@ class PolySpikeHunter:
         
         if order:
             self.stats_tracker.record_trade()
+
+            # Save positions after opening
+            self.paper_engine.save_positions(POSITIONS_FILE)
+
             logger.info(
                 "ENTRY EXECUTED",
                 token_id=signal.token_id[:16] + "...",
@@ -253,11 +270,14 @@ class PolySpikeHunter:
         
         if order:
             self.stats_tracker.record_trade()
-            
+
+            # Save positions after closing
+            self.paper_engine.save_positions(POSITIONS_FILE)
+
             # Log the completed trade
             trade = self.paper_engine.completed_trades[-1]
             self.reporter.log_trade(trade.to_dict())
-            
+
             logger.info(
                 "EXIT EXECUTED",
                 token_id=signal.token_id[:16] + "...",
@@ -304,6 +324,10 @@ class PolySpikeHunter:
 
         # Disconnect client
         self.client.disconnect()
+
+        # Save positions before shutdown
+        self.paper_engine.save_positions(POSITIONS_FILE)
+        logger.info("positions_saved_on_shutdown")
 
         # Get final statistics
         stats = self.paper_engine.get_statistics()

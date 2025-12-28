@@ -5,6 +5,9 @@ Maintains fake balance and simulates order fills based on real market prices.
 
 import time
 import uuid
+import json
+import os
+import tempfile
 from typing import Dict, List, Optional, Literal
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -83,6 +86,17 @@ class Position:
             "entry_timestamp": self.entry_timestamp,
             "order_id": self.order_id,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Position":
+        """Create Position from dictionary."""
+        return cls(
+            token_id=data["token_id"],
+            entry_price=data["entry_price"],
+            size=data["size"],
+            entry_timestamp=data["entry_timestamp"],
+            order_id=data["order_id"],
+        )
 
 
 @dataclass
@@ -409,5 +423,107 @@ class PaperTradingEngine:
         self.total_pnl = 0.0
         self.peak_balance = self.initial_balance
         self.max_drawdown = 0.0
-        
+
         logger.info("paper_trading_engine_reset")
+
+    def save_positions(self, file_path: str) -> None:
+        """
+        Save open positions to JSON file atomically.
+
+        Uses temp file + rename pattern to ensure file is never left in inconsistent state.
+        This prevents data corruption if process crashes during write.
+
+        Args:
+            file_path: Path to save positions JSON file
+        """
+        try:
+            # Prepare data
+            data = {
+                "positions": [pos.to_dict() for pos in self.positions.values()],
+                "balance": self.balance,
+                "timestamp": time.time(),
+            }
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+            # Atomic write: write to temp file then rename
+            fd, temp_path = tempfile.mkstemp(
+                dir=os.path.dirname(file_path),
+                prefix='.positions_',
+                suffix='.tmp'
+            )
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(data, f, indent=2)
+                # Atomic operation on POSIX systems
+                os.replace(temp_path, file_path)
+            except:
+                # Clean up temp file on error
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+                raise
+
+            logger.info(
+                "positions_saved",
+                file_path=file_path,
+                position_count=len(self.positions)
+            )
+
+        except Exception as e:
+            logger.error(
+                "failed_to_save_positions",
+                error=str(e),
+                error_type=type(e).__name__,
+                file_path=file_path
+            )
+
+    def load_positions(self, file_path: str) -> bool:
+        """
+        Load positions from JSON file and restore state.
+
+        Args:
+            file_path: Path to positions JSON file
+
+        Returns:
+            True if positions were loaded successfully, False otherwise
+        """
+        if not os.path.exists(file_path):
+            logger.info("no_positions_file_found", file_path=file_path)
+            return False
+
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+
+            # Restore positions
+            loaded_positions = []
+            for pos_data in data.get("positions", []):
+                position = Position.from_dict(pos_data)
+                self.positions[position.token_id] = position
+                loaded_positions.append(position.token_id)
+
+            # Restore balance if saved
+            if "balance" in data:
+                self.balance = data["balance"]
+
+            logger.info(
+                "positions_loaded",
+                file_path=file_path,
+                position_count=len(loaded_positions),
+                positions=loaded_positions,
+                balance=self.balance
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(
+                "failed_to_load_positions",
+                error=str(e),
+                error_type=type(e).__name__,
+                file_path=file_path
+            )
+            return False
