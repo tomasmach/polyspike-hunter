@@ -89,13 +89,68 @@ class Position:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Position":
-        """Create Position from dictionary."""
+        """
+        Create Position from dictionary with validation.
+
+        Args:
+            data: Dictionary containing position data
+
+        Returns:
+            Position instance
+
+        Raises:
+            ValueError: If required fields are missing or invalid
+        """
+        # Define required fields
+        required_keys = ["token_id", "entry_price", "size", "entry_timestamp", "order_id"]
+
+        # Check for missing keys
+        missing_keys = [key for key in required_keys if key not in data]
+        if missing_keys:
+            raise ValueError(
+                f"Missing required fields in position data: {', '.join(missing_keys)}. "
+                f"Required fields are: {', '.join(required_keys)}"
+            )
+
+        # Validate and convert types
+        try:
+            token_id = str(data["token_id"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid token_id: expected string, got {type(data['token_id']).__name__}") from e
+
+        try:
+            entry_price = float(data["entry_price"])
+            if entry_price < 0:
+                raise ValueError(f"entry_price must be non-negative, got {entry_price}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid entry_price: expected numeric value, got {data['entry_price']}") from e
+
+        try:
+            size = float(data["size"])
+            if size <= 0:
+                raise ValueError(f"size must be positive, got {size}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid size: expected positive numeric value, got {data['size']}") from e
+
+        try:
+            entry_timestamp = float(data["entry_timestamp"])
+            if entry_timestamp < 0:
+                raise ValueError(f"entry_timestamp must be non-negative, got {entry_timestamp}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid entry_timestamp: expected numeric timestamp, got {data['entry_timestamp']}") from e
+
+        try:
+            order_id = str(data["order_id"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid order_id: expected string, got {type(data['order_id']).__name__}") from e
+
+        # All validations passed, create instance
         return cls(
-            token_id=data["token_id"],
-            entry_price=data["entry_price"],
-            size=data["size"],
-            entry_timestamp=data["entry_timestamp"],
-            order_id=data["order_id"],
+            token_id=token_id,
+            entry_price=entry_price,
+            size=size,
+            entry_timestamp=entry_timestamp,
+            order_id=order_id,
         )
 
 
