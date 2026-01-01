@@ -249,23 +249,25 @@ class Settings(BaseModel):
 
         # Validate and clamp poll_interval
         if poll_interval <= 0 or poll_interval >= 60:
+            clamped = max(0.1, min(poll_interval, 59.9))
             logger.warning(
                 "invalid_poll_interval",
                 value=poll_interval,
-                clamping_to=1.0,
+                clamping_to=clamped,
                 reason="must be > 0 and < 60"
             )
-            poll_interval = max(0.1, min(poll_interval, 59.9))
+            poll_interval = clamped
 
         # Validate and clamp spike_threshold
         if spike_threshold <= 0 or spike_threshold >= 1.0:
+            clamped = max(0.001, min(spike_threshold, 0.99))
             logger.warning(
                 "invalid_spike_threshold",
                 value=spike_threshold,
-                clamping_to=0.03,
+                clamping_to=clamped,
                 reason="must be > 0 and < 1.0"
             )
-            spike_threshold = max(0.001, min(spike_threshold, 0.99))
+            spike_threshold = clamped
 
         return cls(
             polymarket=PolymarketConfig(
