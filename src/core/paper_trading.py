@@ -5,6 +5,9 @@ Maintains fake balance and simulates order fills based on real market prices.
 
 import time
 import uuid
+import json
+import os
+import tempfile
 from typing import Dict, List, Optional, Literal
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -83,6 +86,72 @@ class Position:
             "entry_timestamp": self.entry_timestamp,
             "order_id": self.order_id,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Position":
+        """
+        Create Position from dictionary with validation.
+
+        Args:
+            data: Dictionary containing position data
+
+        Returns:
+            Position instance
+
+        Raises:
+            ValueError: If required fields are missing or invalid
+        """
+        # Define required fields
+        required_keys = ["token_id", "entry_price", "size", "entry_timestamp", "order_id"]
+
+        # Check for missing keys
+        missing_keys = [key for key in required_keys if key not in data]
+        if missing_keys:
+            raise ValueError(
+                f"Missing required fields in position data: {', '.join(missing_keys)}. "
+                f"Required fields are: {', '.join(required_keys)}"
+            )
+
+        # Validate and convert types
+        try:
+            token_id = str(data["token_id"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid token_id: expected string, got {type(data['token_id']).__name__}") from e
+
+        try:
+            entry_price = float(data["entry_price"])
+            if entry_price < 0:
+                raise ValueError(f"entry_price must be non-negative, got {entry_price}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid entry_price: expected numeric value, got {data['entry_price']}") from e
+
+        try:
+            size = float(data["size"])
+            if size <= 0:
+                raise ValueError(f"size must be positive, got {size}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid size: expected positive numeric value, got {data['size']}") from e
+
+        try:
+            entry_timestamp = float(data["entry_timestamp"])
+            if entry_timestamp < 0:
+                raise ValueError(f"entry_timestamp must be non-negative, got {entry_timestamp}")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid entry_timestamp: expected numeric timestamp, got {data['entry_timestamp']}") from e
+
+        try:
+            order_id = str(data["order_id"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid order_id: expected string, got {type(data['order_id']).__name__}") from e
+
+        # All validations passed, create instance
+        return cls(
+            token_id=token_id,
+            entry_price=entry_price,
+            size=size,
+            entry_timestamp=entry_timestamp,
+            order_id=order_id,
+        )
 
 
 @dataclass
@@ -409,5 +478,112 @@ class PaperTradingEngine:
         self.total_pnl = 0.0
         self.peak_balance = self.initial_balance
         self.max_drawdown = 0.0
-        
+
         logger.info("paper_trading_engine_reset")
+
+    def save_positions(self, file_path: str) -> None:
+        """
+        Save open positions to JSON file atomically.
+
+        Uses temp file + rename pattern to ensure file is never left in inconsistent state.
+        This prevents data corruption if process crashes during write.
+
+        Args:
+            file_path: Path to save positions JSON file
+        """
+        try:
+            # Prepare data
+            data = {
+                "positions": [pos.to_dict() for pos in self.positions.values()],
+                "balance": self.balance,
+                "timestamp": time.time(),
+            }
+
+            # Ensure directory exists
+            dirpath = os.path.dirname(file_path)
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+
+            # Use current directory if no directory component in file_path
+            temp_dir = dirpath if dirpath else "."
+
+            # Atomic write: write to temp file then rename
+            fd, temp_path = tempfile.mkstemp(
+                dir=temp_dir,
+                prefix='.positions_',
+                suffix='.tmp'
+            )
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(data, f, indent=2)
+                # Atomic operation on POSIX systems
+                os.replace(temp_path, file_path)
+            except:
+                # Clean up temp file on error
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+                raise
+
+            logger.info(
+                "positions_saved",
+                file_path=file_path,
+                position_count=len(self.positions)
+            )
+
+        except Exception as e:
+            logger.error(
+                "failed_to_save_positions",
+                error=str(e),
+                error_type=type(e).__name__,
+                file_path=file_path
+            )
+
+    def load_positions(self, file_path: str) -> bool:
+        """
+        Load positions from JSON file and restore state.
+
+        Args:
+            file_path: Path to positions JSON file
+
+        Returns:
+            True if positions were loaded successfully, False otherwise
+        """
+        if not os.path.exists(file_path):
+            logger.info("no_positions_file_found", file_path=file_path)
+            return False
+
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+
+            # Restore positions
+            loaded_positions = []
+            for pos_data in data.get("positions", []):
+                position = Position.from_dict(pos_data)
+                self.positions[position.token_id] = position
+                loaded_positions.append(position.token_id)
+
+            # Restore balance if saved
+            if "balance" in data:
+                self.balance = data["balance"]
+
+            logger.info(
+                "positions_loaded",
+                file_path=file_path,
+                position_count=len(loaded_positions),
+                positions=loaded_positions,
+                balance=self.balance
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(
+                "failed_to_load_positions",
+                error=str(e),
+                error_type=type(e).__name__,
+                file_path=file_path
+            )
+            return False
