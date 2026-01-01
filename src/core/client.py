@@ -17,7 +17,7 @@ logger = structlog.get_logger(__name__)
 T = TypeVar('T')
 
 
-def async_retry(max_retries: int = 3, delays: List[float] = None):
+def async_retry(max_retries: int = 3, delays: Optional[List[float]] = None):
     """
     Retry decorator with exponential backoff for async functions.
 
