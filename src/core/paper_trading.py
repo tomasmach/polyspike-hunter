@@ -500,11 +500,16 @@ class PaperTradingEngine:
             }
 
             # Ensure directory exists
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            dirpath = os.path.dirname(file_path)
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+
+            # Use current directory if no directory component in file_path
+            temp_dir = dirpath if dirpath else "."
 
             # Atomic write: write to temp file then rename
             fd, temp_path = tempfile.mkstemp(
-                dir=os.path.dirname(file_path),
+                dir=temp_dir,
                 prefix='.positions_',
                 suffix='.tmp'
             )
