@@ -3,8 +3,9 @@ Polymarket CLOB client wrapper with authentication.
 Handles connection to Polymarket API using py-clob-client.
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, TypeVar
 import asyncio
+from functools import wraps
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, ApiCreds
 import structlog
@@ -12,6 +13,56 @@ import structlog
 from config.settings import PolymarketConfig
 
 logger = structlog.get_logger(__name__)
+
+T = TypeVar('T')
+
+
+def async_retry(max_retries: int = 3, delays: List[float] = None):
+    """
+    Retry decorator with exponential backoff for async functions.
+
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3)
+        delays: List of delays in seconds between retries (default: [1, 2, 4])
+    """
+    if delays is None:
+        delays = [1.0, 2.0, 4.0]
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        async def wrapper(*args, **kwargs) -> T:
+            last_exception = None
+
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+
+                    if attempt < max_retries - 1:
+                        delay = delays[min(attempt, len(delays) - 1)]
+                        logger.warning(
+                            "retry_attempt",
+                            function=func.__name__,
+                            attempt=attempt + 1,
+                            max_retries=max_retries,
+                            delay=delay,
+                            error=str(e)
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            "retry_exhausted",
+                            function=func.__name__,
+                            max_retries=max_retries,
+                            error=str(e)
+                        )
+
+            # If all retries failed, raise the last exception
+            raise last_exception
+
+        return wrapper
+    return decorator
 
 
 class PolymarketClient:
@@ -87,13 +138,14 @@ class PolymarketClient:
             )
         return self._client
     
+    @async_retry(max_retries=3, delays=[1.0, 2.0, 4.0])
     async def get_markets(self, next_cursor: Optional[str] = None) -> Dict[str, Any]:
         """
         Get list of available markets.
-        
+
         Args:
             next_cursor: Pagination cursor for next page
-            
+
         Returns:
             Market data including condition_id, question, tokens, etc.
         """
@@ -103,7 +155,7 @@ class PolymarketClient:
                 markets = await asyncio.to_thread(self.client.get_markets, next_cursor=next_cursor)
             else:
                 markets = await asyncio.to_thread(self.client.get_markets)
-            
+
             # Handle different return types
             if isinstance(markets, dict):
                 logger.debug("fetched_markets", count=len(markets.get("data", [])))
@@ -119,13 +171,14 @@ class PolymarketClient:
             )
             raise
     
+    @async_retry(max_retries=3, delays=[1.0, 2.0, 4.0])
     async def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """
         Get order book for a specific token.
-        
+
         Args:
             token_id: Token ID to fetch order book for
-            
+
         Returns:
             Order book with bids and asks
         """
@@ -148,6 +201,7 @@ class PolymarketClient:
             )
             raise
     
+    @async_retry(max_retries=3, delays=[1.0, 2.0, 4.0])
     async def get_last_trade_price(self, token_id: str) -> Optional[float]:
         """
         Get last trade price for a token.
@@ -167,16 +221,48 @@ class PolymarketClient:
                 if isinstance(result, dict):
                     price_str = result.get('price')
                     if price_str:
-                        price = float(price_str)
-                        logger.debug("fetched_last_price", token_id=token_id, price=price)
-                        return price
+                        try:
+                            price = float(price_str)
+                            logger.debug("fetched_last_price", token_id=token_id, price=price)
+                            return price
+                        except (ValueError, TypeError) as conv_err:
+                            logger.error(
+                                "invalid_price_conversion",
+                                token_id=token_id,
+                                price_str=price_str,
+                                error=str(conv_err)
+                            )
+                            return None
                 else:
                     # Fallback if API changes to return string/float directly
-                    price = float(result)
-                    logger.debug("fetched_last_price", token_id=token_id, price=price)
-                    return price
+                    try:
+                        price = float(result)
+                        logger.debug("fetched_last_price", token_id=token_id, price=price)
+                        return price
+                    except (ValueError, TypeError) as conv_err:
+                        logger.error(
+                            "invalid_result_type",
+                            token_id=token_id,
+                            result_type=type(result).__name__,
+                            result=str(result),
+                            error=str(conv_err)
+                        )
+                        return None
             return None
         except Exception as e:
+            error_msg = str(e).lower()
+
+            # Detect rate limiting (429 status or "rate limit" in message)
+            if "429" in error_msg or "rate limit" in error_msg:
+                logger.warning(
+                    "rate_limit_detected",
+                    token_id=token_id,
+                    error=str(e),
+                    sleeping_for=1.0
+                )
+                await asyncio.sleep(1.0)
+                return None
+
             # Log with more details including the cause
             error_details = {
                 "token_id": token_id,

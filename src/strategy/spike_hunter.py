@@ -79,6 +79,24 @@ class SpikeHunterStrategy:
             cooldown=cooldown_seconds
         )
     
+    def _validate_price(self, price: Optional[float]) -> bool:
+        """
+        Validate that a price value is valid for Polymarket.
+
+        Args:
+            price: Price value to validate
+
+        Returns:
+            True if price is valid, False otherwise
+        """
+        if price is None:
+            return False
+        if price < 0:
+            return False
+        if price > 1.0:  # Max valid price in Polymarket
+            return False
+        return True
+
     def analyze_price_update(
         self,
         update: PriceUpdate,
@@ -121,7 +139,22 @@ class SpikeHunterStrategy:
         current_time: float
     ) -> TradingSignal:
         """Check if conditions met for entry signal."""
-        
+
+        # Validate price before processing
+        if not self._validate_price(update.price):
+            logger.warning(
+                "invalid_price_in_entry_check",
+                token_id=update.token_id[:16] + "...",
+                price=update.price
+            )
+            return TradingSignal(
+                signal_type=SignalType.NONE,
+                token_id=update.token_id,
+                price=update.price if update.price is not None else 0.0,
+                timestamp=update.timestamp,
+                reason="invalid_price"
+            )
+
         # Check cooldown
         last_entry = self._recent_entries.get(update.token_id)
         if last_entry is not None:
@@ -138,6 +171,12 @@ class SpikeHunterStrategy:
         # Calculate price change vs MA
         ma = tracker.get_moving_average(self.ma_window_seconds)
         if ma is None or ma == 0:
+            logger.debug(
+                "insufficient_data_for_ma",
+                token_id=update.token_id[:16] + "...",
+                ma_window=self.ma_window_seconds,
+                reason="Not enough price history to calculate moving average"
+            )
             return TradingSignal(
                 signal_type=SignalType.NONE,
                 token_id=update.token_id,
@@ -189,7 +228,40 @@ class SpikeHunterStrategy:
         entry_price: float
     ) -> TradingSignal:
         """Check if conditions met for exit signal."""
-        
+
+        # Validate current price
+        if not self._validate_price(update.price):
+            logger.error(
+                "invalid_current_price_in_exit_check",
+                token_id=update.token_id[:16] + "...",
+                current_price=update.price,
+                entry_price=entry_price
+            )
+            return TradingSignal(
+                signal_type=SignalType.NONE,
+                token_id=update.token_id,
+                price=update.price if update.price is not None else 0.0,
+                timestamp=update.timestamp,
+                reason="invalid_price"
+            )
+
+        # Validate entry price to prevent division by zero
+        if entry_price is None or entry_price == 0:
+            logger.error(
+                "invalid_entry_price_in_exit_check",
+                token_id=update.token_id[:16] + "...",
+                entry_price=entry_price,
+                current_price=update.price,
+                reason="Entry price is invalid (None or 0), cannot calculate P&L"
+            )
+            return TradingSignal(
+                signal_type=SignalType.NONE,
+                token_id=update.token_id,
+                price=update.price,
+                timestamp=update.timestamp,
+                reason="invalid_entry_price"
+            )
+
         # Calculate P&L percentage
         pnl_pct = (update.price - entry_price) / entry_price
         

@@ -67,13 +67,27 @@ class Position:
     
     def get_pnl(self, current_price: float) -> float:
         """Calculate current P&L."""
+        # CRITICAL: Protect against division by zero (indicates corrupted data)
         if self.entry_price == 0:
+            logger.warning(
+                "pnl_calculation_zero_entry_price",
+                token_id=self.token_id,
+                current_price=current_price,
+                message="entry_price is 0, returning 0.0 (corrupted data)"
+            )
             return 0.0
         return (current_price - self.entry_price) * (self.size / self.entry_price)
     
     def get_pnl_pct(self, current_price: float) -> float:
         """Calculate P&L percentage."""
+        # CRITICAL: Protect against division by zero (indicates corrupted data)
         if self.entry_price == 0:
+            logger.warning(
+                "pnl_pct_calculation_zero_entry_price",
+                token_id=self.token_id,
+                current_price=current_price,
+                message="entry_price is 0, returning 0.0 (corrupted data)"
+            )
             return 0.0
         return (current_price - self.entry_price) / self.entry_price
     
@@ -122,6 +136,9 @@ class Position:
             entry_price = float(data["entry_price"])
             if entry_price < 0:
                 raise ValueError(f"entry_price must be non-negative, got {entry_price}")
+            # CRITICAL: Sanity check - Polymarket prices cannot exceed 1.0
+            if entry_price > 1.0:
+                raise ValueError(f"entry_price exceeds maximum (1.0 for Polymarket), got {entry_price}")
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid entry_price: expected numeric value, got {data['entry_price']}") from e
 
@@ -129,6 +146,9 @@ class Position:
             size = float(data["size"])
             if size <= 0:
                 raise ValueError(f"size must be positive, got {size}")
+            # CRITICAL: Sanity check - reasonable maximum position size
+            if size > 1000.0:
+                raise ValueError(f"size exceeds reasonable maximum (1000.0), got {size}")
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid size: expected positive numeric value, got {data['size']}") from e
 
@@ -342,7 +362,17 @@ class PaperTradingEngine:
         if order.price is None or order.filled_timestamp is None:
             logger.error("cannot_open_position_missing_data", order_id=order.order_id)
             return
-        
+
+        # CRITICAL: Defend against duplicate positions (shouldn't happen but log if it does)
+        if order.token_id in self.positions:
+            logger.warning(
+                "duplicate_position_detected",
+                token_id=order.token_id,
+                existing_entry_price=self.positions[order.token_id].entry_price,
+                new_entry_price=order.price,
+                message="Overwriting existing position - this should not happen"
+            )
+
         position = Position(
             token_id=order.token_id,
             entry_price=order.price,
@@ -350,7 +380,7 @@ class PaperTradingEngine:
             entry_timestamp=order.filled_timestamp,
             order_id=order.order_id
         )
-        
+
         self.positions[order.token_id] = position
         
         logger.info(
@@ -378,9 +408,20 @@ class PaperTradingEngine:
         # Calculate P&L
         pnl = position.get_pnl(exit_price)
         pnl_pct = position.get_pnl_pct(exit_price)
-        
+
         # Update balance - only add/subtract P&L (position size was never subtracted from balance)
         self.balance += pnl
+
+        # CRITICAL: Prevent negative balance from large losses
+        if self.balance < 0:
+            logger.critical(
+                "negative_balance_detected",
+                balance=self.balance,
+                pnl=pnl,
+                token_id=order.token_id,
+                message="Balance went negative due to large loss, clamping to 0"
+            )
+            self.balance = 0.0
         
         # Update statistics
         self.total_pnl += pnl
@@ -483,7 +524,7 @@ class PaperTradingEngine:
 
     def save_positions(self, file_path: str) -> None:
         """
-        Save open positions to JSON file atomically.
+        Save open positions and all statistics to JSON file atomically.
 
         Uses temp file + rename pattern to ensure file is never left in inconsistent state.
         This prevents data corruption if process crashes during write.
@@ -492,10 +533,16 @@ class PaperTradingEngine:
             file_path: Path to save positions JSON file
         """
         try:
-            # Prepare data
+            # CRITICAL: Prepare data including ALL statistics for persistence
             data = {
                 "positions": [pos.to_dict() for pos in self.positions.values()],
                 "balance": self.balance,
+                "total_pnl": self.total_pnl,
+                "winning_trades": self.winning_trades,
+                "losing_trades": self.losing_trades,
+                "total_trades": self.total_trades,
+                "peak_balance": self.peak_balance,
+                "max_drawdown": self.max_drawdown,
                 "timestamp": time.time(),
             }
 
@@ -542,7 +589,7 @@ class PaperTradingEngine:
 
     def load_positions(self, file_path: str) -> bool:
         """
-        Load positions from JSON file and restore state.
+        Load positions and all statistics from JSON file and restore state.
 
         Args:
             file_path: Path to positions JSON file
@@ -555,29 +602,82 @@ class PaperTradingEngine:
             return False
 
         try:
+            # CRITICAL: Robust JSON parsing with explicit error handling
             with open(file_path, 'r') as f:
-                data = json.load(f)
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.error(
+                        "corrupted_json_file",
+                        error=str(e),
+                        file_path=file_path,
+                        message="JSON file is corrupted, cannot load positions"
+                    )
+                    return False
 
-            # Restore positions
+            # CRITICAL: Validate data structure
+            if not isinstance(data, dict):
+                logger.error(
+                    "invalid_json_structure",
+                    file_path=file_path,
+                    message="Expected JSON object (dict), got different type"
+                )
+                return False
+
+            # CRITICAL: Resilient position loading - skip invalid, load valid ones
             loaded_positions = []
+            failed_positions = 0
             for pos_data in data.get("positions", []):
-                position = Position.from_dict(pos_data)
-                self.positions[position.token_id] = position
-                loaded_positions.append(position.token_id)
+                try:
+                    position = Position.from_dict(pos_data)
+                    self.positions[position.token_id] = position
+                    loaded_positions.append(position.token_id)
+                except (ValueError, KeyError, TypeError) as e:
+                    # Skip invalid position but continue loading others
+                    failed_positions += 1
+                    logger.warning(
+                        "skipping_invalid_position",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        position_data=pos_data,
+                        message="Position data is invalid, skipping but loading others"
+                    )
 
-            # Restore balance if saved
+            # CRITICAL: Restore ALL statistics from saved data
             if "balance" in data:
-                self.balance = data["balance"]
+                self.balance = float(data["balance"])
+
+            if "total_pnl" in data:
+                self.total_pnl = float(data["total_pnl"])
+
+            if "winning_trades" in data:
+                self.winning_trades = int(data["winning_trades"])
+
+            if "losing_trades" in data:
+                self.losing_trades = int(data["losing_trades"])
+
+            if "total_trades" in data:
+                self.total_trades = int(data["total_trades"])
+
+            if "peak_balance" in data:
+                self.peak_balance = float(data["peak_balance"])
+
+            if "max_drawdown" in data:
+                self.max_drawdown = float(data["max_drawdown"])
 
             logger.info(
                 "positions_loaded",
                 file_path=file_path,
                 position_count=len(loaded_positions),
+                failed_positions=failed_positions,
                 positions=loaded_positions,
-                balance=self.balance
+                balance=self.balance,
+                total_trades=self.total_trades,
+                total_pnl=self.total_pnl
             )
 
-            return True
+            # Return True if at least one position was loaded successfully
+            return len(loaded_positions) > 0 or failed_positions == 0
 
         except Exception as e:
             logger.error(
