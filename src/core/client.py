@@ -201,7 +201,6 @@ class PolymarketClient:
             )
             raise
     
-    @async_retry(max_retries=3, delays=[1.0, 2.0, 4.0])
     async def get_last_trade_price(self, token_id: str) -> Optional[float]:
         """
         Get last trade price for a token.
