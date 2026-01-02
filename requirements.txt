@@ -15,3 +15,6 @@ structlog==25.5.0
 
 # Ethereum Account Tools
 eth-account==0.13.4
+ 
+# MQTT Client for real-time notifications
+paho-mqtt==2.1.0
