@@ -143,6 +143,9 @@ class PolySpikeHunter:
         # Track current prices for equity calculation
         self._current_prices: Dict[str, float] = {}
 
+        # Track balance updates
+        self._last_balance_value = self.settings.paper_trading.initial_balance
+
         # Running and shutdown flags
         self._running = False
         self._shutdown_complete = False
@@ -171,6 +174,53 @@ class PolySpikeHunter:
             except Exception as e:
                 logger.error(
                     "heartbeat_error",
+                    error=str(e),
+                    error_type=type(e).__name__
+                )
+    
+    async def _balance_update_loop(self) -> None:
+        """
+        Send balance updates to MQTT whenever balance changes.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Check every minute
+                
+                if not self.mqtt_publisher or not self._running:
+                    continue
+                
+                # Get current balance and equity
+                current_balance = self.paper_engine.balance
+                total_equity = self.paper_engine.get_total_equity(self._current_prices)
+                available = self.paper_engine.get_available_balance()
+                locked = sum(pos.size for pos in self.paper_engine.positions.values())
+                unrealized_pnl = total_equity - current_balance
+                
+                # Check if balance has changed
+                if current_balance != self._last_balance_value:
+                    self.mqtt_publisher.publish_balance_update({
+                        "balance": current_balance,
+                        "equity": total_equity,
+                        "available_balance": available,
+                        "locked_in_positions": locked,
+                        "unrealized_pnl": unrealized_pnl,
+                        "total_pnl": self.paper_engine.total_pnl,
+                        "update_reason": "balance_changed",
+                    })
+                    
+                    self._last_balance_value = current_balance
+                    
+                    logger.debug(
+                        "balance_update_published",
+                        balance=f"${current_balance:.2f}"
+                    )
+                
+            except asyncio.CancelledError:
+                logger.debug("balance_update_loop_cancelled")
+                break
+            except Exception as e:
+                logger.error(
+                    "balance_update_error",
                     error=str(e),
                     error_type=type(e).__name__
                 )
@@ -220,8 +270,10 @@ class PolySpikeHunter:
 
         # Start background tasks
         heartbeat_task = None
+        balance_task = None
         if self.mqtt_publisher:
             heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            balance_task = asyncio.create_task(self._balance_update_loop())
 
         # Start monitoring and wait
         logger.info("Bot is now running. Press Ctrl+C to stop.")
@@ -233,6 +285,13 @@ class PolySpikeHunter:
                 heartbeat_task.cancel()
                 try:
                     await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if balance_task:
+                balance_task.cancel()
+                try:
+                    await balance_task
                 except asyncio.CancelledError:
                     pass
     
