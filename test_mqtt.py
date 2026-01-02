@@ -17,6 +17,7 @@ import asyncio
 import sys
 import time
 import json
+import socket
 from typing import Optional
 import paho.mqtt.client as mqtt
 
@@ -24,6 +25,11 @@ import paho.mqtt.client as mqtt
 MQTT_HOST = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC_PREFIX = "polyspike"
+
+
+class MQTTConnectionError(Exception):
+    """Custom exception for MQTT connection failures."""
+    pass
 
 
 class MQTTTester:
@@ -35,6 +41,7 @@ class MQTTTester:
         self.client_id = "polyspike_tester"
         self.topic_prefix = MQTT_TOPIC_PREFIX
         self.client: Optional[mqtt.Client] = None
+        self._connected = False
     
     def on_connect(self, client, userdata, flags, rc):
         """Callback on connection."""
@@ -66,29 +73,92 @@ class MQTTTester:
             print(f"❌ Error parsing message: {e}")
             print(f"   Raw payload: {msg.payload}")
     
-    def connect(self) -> None:
-        """Connect to MQTT broker."""
+    def connect(self, max_retries: int = 3, retry_delay: float = 2.0) -> None:
+        """Connect to MQTT broker with retry logic.
+        
+        Args:
+            max_retries: Maximum number of connection attempts (default: 3)
+            retry_delay: Initial delay between retries in seconds (default: 2.0)
+        
+        Raises:
+            MQTTConnectionError: If all connection attempts fail
+        """
+        self._connected = False
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, self.client_id)
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         
-        print(f"🔌 Connecting to {self.host}:{self.port}...")
-        self.client.connect(self.host, self.port, keepalive=60)
-        self.client.loop_start()
-        time.sleep(1)
+        retry_count = 0
+        last_error = None
+        
+        while retry_count < max_retries:
+            try:
+                print(f"🔌 Connecting to {self.host}:{self.port}... (attempt {retry_count + 1}/{max_retries})")
+                
+                self.client.connect(self.host, self.port, keepalive=60)
+                self.client.loop_start()
+                
+                time.sleep(1)
+                
+                if self.client.is_connected():
+                    self._connected = True
+                    print(f"✅ MQTT connection established successfully")
+                    return
+                else:
+                    raise MQTTConnectionError(f"Connection callback not received for {self.host}:{self.port}")
+                    
+            except (OSError, socket.error) as e:
+                last_error = e
+                print(f"❌ Network error connecting to {self.host}:{self.port}: {e}")
+                self._cleanup_client()
+                
+            except Exception as e:
+                last_error = e
+                print(f"❌ Unexpected error connecting to MQTT broker: {type(e).__name__}: {e}")
+                self._cleanup_client()
+            
+            retry_count += 1
+            
+            if retry_count < max_retries:
+                delay = retry_delay * (2 ** (retry_count - 1))
+                print(f"⏳ Retrying in {delay:.1f} seconds...")
+                time.sleep(delay)
+        
+        self._connected = False
+        error_msg = f"Failed to connect to MQTT broker at {self.host}:{self.port} after {max_retries} attempts"
+        if last_error:
+            error_msg += f". Last error: {type(last_error).__name__}: {last_error}"
+        raise MQTTConnectionError(error_msg)
+    
+    def _cleanup_client(self) -> None:
+        """Clean up MQTT client resources."""
+        if self.client:
+            try:
+                self.client.loop_stop()
+                self.client.disconnect()
+            except Exception:
+                pass
+            finally:
+                self.client = None
+    
+    def is_connected(self) -> bool:
+        """Check if connected to MQTT broker."""
+        return self._connected and self.client is not None and self.client.is_connected()
     
     def disconnect(self) -> None:
         """Disconnect from broker."""
         if self.client:
-            self.client.loop_stop()
-            self.client.disconnect()
+            self._cleanup_client()
+            self._connected = False
             print("👋 Disconnected")
     
     def publish(self, topic: str, payload: dict, qos: int = 0, retain: bool = False) -> None:
         """Publish test message."""
+        if not self.is_connected():
+            raise MQTTConnectionError("Cannot publish: not connected to MQTT broker")
+        
         full_topic = f"{self.topic_prefix}/{topic}"
         
-        # Add timestamp if not present
         if 'timestamp' not in payload:
             payload['timestamp'] = time.time()
         
