@@ -44,11 +44,38 @@ class MarketNameResolver:
         )
 
         try:
-            # Fetch all markets
-            markets_data = await self.client.get_markets()
-            all_markets = markets_data.get("data", [])
+            # Fetch all markets with pagination
+            all_markets = []
+            next_cursor = None
+            page_count = 0
 
-            # Build token_id -> question mapping
+            while True:
+                try:
+                    markets_data = await self.client.get_markets(next_cursor=next_cursor)
+                    markets = markets_data.get("data", [])
+                    all_markets.extend(markets)
+                    page_count += 1
+
+                    # Check for next cursor
+                    next_cursor = markets_data.get("next_cursor")
+
+                    if not next_cursor:
+                        break
+
+                    # Small delay to avoid rate limiting
+                    await asyncio.sleep(0.1)
+
+                except Exception as e:
+                    logger.warning(
+                        "failed_to_fetch_markets_page",
+                        page=page_count,
+                        error=str(e),
+                        error_type=type(e).__name__
+                    )
+                    # Continue with what we have
+                    break
+
+            # Build token_id -> question mapping from all pages
             token_to_question: Dict[str, str] = {}
 
             for market in all_markets:
@@ -74,7 +101,9 @@ class MarketNameResolver:
                 "market_names_cached",
                 cached_count=cached_count,
                 total_requested=len(token_ids),
-                fallback_count=len(token_ids) - cached_count
+                fallback_count=len(token_ids) - cached_count,
+                pages_fetched=page_count,
+                total_markets=len(all_markets)
             )
 
         except Exception as e:
