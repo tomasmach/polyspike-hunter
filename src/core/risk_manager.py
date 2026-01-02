@@ -98,6 +98,7 @@ class RiskManager:
                 current=current_balance,
                 message="This should never happen - data corruption or logic error"
             )
+            self.trigger_emergency_stop("negative_balance_detected")
             return False, "negative_balance_error"
 
         if current_balance > 1000000:
