@@ -43,9 +43,9 @@ class MQTTTester:
         self.client: Optional[mqtt.Client] = None
         self._connected = False
     
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, client, userdata, connect_flags, reason_code, properties):
         """Callback on connection."""
-        if rc == 0:
+        if reason_code == 0:
             print(f"✅ Connected to MQTT broker at {self.host}:{self.port}")
             # Subscribe to all topics in subscriber mode
             if hasattr(self, '_subscriber_mode') and self._subscriber_mode:
@@ -53,7 +53,7 @@ class MQTTTester:
                 client.subscribe(topic)
                 print(f"📡 Subscribed to: {topic}")
         else:
-            print(f"❌ Connection failed with code: {rc}")
+            print(f"❌ Connection failed with code: {reason_code}")
     
     def on_message(self, client, userdata, msg):
         """Callback on message received."""
