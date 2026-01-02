@@ -41,14 +41,14 @@ The bot operates on a **Spike Hunter / Mean Reversion** strategy:
 
 ## 📡 MQTT Integration
 
-Bot publikuje real-time události přes MQTT pro monitoring a Discord notifikace:
+Bot publishes real-time events via MQTT for monitoring and Discord notifications:
 
-**Události:**
+**Events:**
 - ✅ Bot status (started/stopped/heartbeat)
 - ✅ Spike detection
 - ✅ Position opened/closed
 - ✅ Trade completed (+ P&L)
-- ✅ Balance updates (každých 12h)
+- ✅ Balance updates (every 12h)
 - ✅ Session statistics
 
 **MQTT Broker:**
@@ -56,9 +56,9 @@ Bot publikuje real-time události přes MQTT pro monitoring a Discord notifikace
 - No authentication
 - Topic prefix: `polyspike/`
 
-**Dokumentace:** Viz [docs/MQTT_API.md](docs/MQTT_API.md) pro kompletní API reference.
+**Documentation:** See [docs/MQTT_API.md](docs/MQTT_API.md) for complete API reference.
 
-**Discord Bot:** Samostatný repository (coming soon)
+**Discord Bot:** Separate repository (coming soon)
 
 ## 🚀 Quick Start
 
