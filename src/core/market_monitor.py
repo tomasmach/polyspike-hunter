@@ -7,6 +7,7 @@ import asyncio
 from typing import Dict, List, Optional, Callable
 import structlog
 from dataclasses import dataclass
+import time
 
 from src.core.client import PolymarketClient
 from src.core.market_selector import MarketSelector
@@ -233,7 +234,6 @@ class MarketMonitor:
             )
             return
 
-        import time
         current_time = time.time()
 
         # Check exponential backoff - skip if in backoff period
