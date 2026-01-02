@@ -146,6 +146,9 @@ class PolySpikeHunter:
         # Track balance updates
         self._last_balance_value = self.settings.paper_trading.initial_balance
 
+        # Track periodic balance publishes
+        self._last_periodic_publish = time.time()
+
         # Running and shutdown flags
         self._running = False
         self._shutdown_complete = False
@@ -180,24 +183,37 @@ class PolySpikeHunter:
     
     async def _balance_update_loop(self) -> None:
         """
-        Send balance updates to MQTT whenever balance changes.
+        Send balance updates to MQTT on balance change or periodic interval.
         """
+        interval = self.settings.mqtt.balance_update_interval
+
         while self._running:
             try:
-                await asyncio.sleep(60)  # Check every minute
-                
+                await asyncio.sleep(5)
+
                 if not self.mqtt_publisher or not self._running:
                     continue
-                
-                # Get current balance and equity
+
+                now = time.time()
+
                 current_balance = self.paper_engine.balance
                 total_equity = self.paper_engine.get_total_equity(self._current_prices)
                 available = self.paper_engine.get_available_balance()
                 locked = sum(pos.size for pos in self.paper_engine.positions.values())
                 unrealized_pnl = total_equity - current_balance
-                
-                # Check if balance has changed
-                if current_balance != self._last_balance_value:
+
+                balance_changed = current_balance != self._last_balance_value
+                periodic_due = now - self._last_periodic_publish >= interval
+
+                if balance_changed or periodic_due:
+                    update_reason = []
+                    if balance_changed:
+                        update_reason.append("balance_changed")
+                        self._last_balance_value = current_balance
+                    if periodic_due:
+                        update_reason.append("periodic")
+                        self._last_periodic_publish = now
+
                     self.mqtt_publisher.publish_balance_update({
                         "balance": current_balance,
                         "equity": total_equity,
@@ -205,16 +221,15 @@ class PolySpikeHunter:
                         "locked_in_positions": locked,
                         "unrealized_pnl": unrealized_pnl,
                         "total_pnl": self.paper_engine.total_pnl,
-                        "update_reason": "balance_changed",
+                        "update_reason": ",".join(update_reason),
                     })
-                    
-                    self._last_balance_value = current_balance
-                    
+
                     logger.debug(
                         "balance_update_published",
-                        balance=f"${current_balance:.2f}"
+                        balance=f"${current_balance:.2f}",
+                        reason=",".join(update_reason)
                     )
-                
+
             except asyncio.CancelledError:
                 logger.debug("balance_update_loop_cancelled")
                 break
