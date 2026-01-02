@@ -271,6 +271,19 @@ class PolySpikeHunter:
             position_entry_price=position.entry_price if position else None
         )
         
+        # Publish spike detection to MQTT
+        if signal.signal_type == SignalType.ENTRY and signal.spike_magnitude:
+            if self.mqtt_publisher:
+                market_name = self.monitor.get_market_name(signal.token_id)
+                self.mqtt_publisher.publish_market_event("spike_detected", {
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "price": signal.price,
+                    "spike_pct": signal.spike_magnitude,
+                    "direction": "up" if signal.reason == "spike_up" else "down",
+                    "reason": signal.reason,
+                })
+        
         # Execute signal
         if signal.signal_type != SignalType.NONE:
             self.stats_tracker.record_signal()
@@ -330,6 +343,17 @@ class PolySpikeHunter:
             # Save positions after opening
             self.paper_engine.save_positions(POSITIONS_FILE)
 
+            if self.mqtt_publisher:
+                market_name = self.monitor.get_market_name(signal.token_id)
+                self.mqtt_publisher.publish_trading_event("position/opened", {
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "entry_price": signal.price,
+                    "position_size": position_size,
+                    "reason": signal.reason,
+                    "spike_magnitude": signal.spike_magnitude,
+                })
+
             market_name = self.monitor.get_market_name(signal.token_id)
             logger.info(
                 "ENTRY EXECUTED",
@@ -364,6 +388,36 @@ class PolySpikeHunter:
             # Log the completed trade
             trade = self.paper_engine.completed_trades[-1]
             self.reporter.log_trade(trade.to_dict())
+
+            if self.mqtt_publisher:
+                market_name = self.monitor.get_market_name(signal.token_id)
+                
+                # Publish position closed
+                self.mqtt_publisher.publish_trading_event("position/closed", {
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "entry_price": position.entry_price,
+                    "exit_price": signal.price,
+                    "position_size": position.size,
+                    "pnl": trade.pnl,
+                    "pnl_pct": trade.pnl_pct,
+                    "duration_seconds": trade.exit_timestamp - trade.entry_timestamp,
+                    "exit_reason": signal.reason,
+                })
+                
+                # Publish trade completed
+                self.mqtt_publisher.publish_trading_event("trade/completed", {
+                    "trade_id": trade.trade_id,
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "entry_price": trade.entry_price,
+                    "exit_price": trade.exit_price,
+                    "size": trade.size,
+                    "pnl": trade.pnl,
+                    "pnl_pct": trade.pnl_pct,
+                    "duration_seconds": trade.exit_timestamp - trade.entry_timestamp,
+                    "reason": signal.reason,
+                })
 
             market_name = self.monitor.get_market_name(signal.token_id)
             logger.info(
