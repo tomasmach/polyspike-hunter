@@ -264,10 +264,6 @@ class PolySpikeHunter:
         # Register price update callback
         self.monitor.on_price_update(self._handle_price_update)
 
-        # Initialize market names
-        logger.info("fetching_market_names")
-        await self.name_resolver.initialize(self.monitor.monitored_markets)
-
         # Publish bot started event
         if self.mqtt_publisher:
             self.mqtt_publisher.publish_bot_status("started", {
