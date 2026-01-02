@@ -8,6 +8,7 @@ market data, and bot status updates to MQTT broker with automatic reconnection.
 import json
 import time
 import threading
+import asyncio
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from paho.mqtt.client import Client as MQTTClient
@@ -68,6 +69,9 @@ class MQTTPublisher:
         
         self._client: Optional[MQTTClient] = None
         self._connected = False
+        self._connection_errors = 0
+        self._max_connection_errors = 10
+        self._reconnect_delay = 5
         self._connect_lock = threading.Lock()
         self._publish_lock = threading.Lock()
         
@@ -82,7 +86,7 @@ class MQTTPublisher:
         Connect to MQTT broker with retry logic.
         
         Raises:
-            RuntimeError: If connection fails after multiple retries
+            RuntimeError: If connection fails after max retries
         """
         if self._connected:
             logger.warning("mqtt_already_connected", client_id=self.client_id)
@@ -102,17 +106,15 @@ class MQTTPublisher:
             self._client.on_disconnect = self._on_disconnect
             self._client.on_publish = self._on_publish
             
-            current_delay = self.reconnect_delay
-            max_retries = 10
             attempt = 0
             
-            while attempt < max_retries:
-                attempt += 1
+            while attempt < self._max_connection_errors:
                 try:
                     logger.info(
                         "mqtt_connecting",
-                        broker=f"{self.host}:{self.port}",
-                        attempt=attempt
+                        host=self.host,
+                        port=self.port,
+                        attempt=attempt + 1
                     )
                     
                     self._client.connect(
@@ -123,42 +125,46 @@ class MQTTPublisher:
                     
                     self._client.loop_start()
                     
-                    timeout = 10
-                    start_time = time.time()
-                    while not self._connected:
-                        if time.time() - start_time > timeout:
-                            raise TimeoutError("Connection timeout")
-                        await self._async_sleep(0.1)
+                    await asyncio.sleep(1)
                     
-                    logger.info(
-                        "mqtt_connected",
-                        broker=f"{self.host}:{self.port}",
-                        client_id=self.client_id
-                    )
-                    return
+                    if self._connected:
+                        logger.info("mqtt_connection_established")
+                        return
+                    else:
+                        raise ConnectionError("Failed to establish connection")
+                        
+                except Exception as e:
+                    attempt += 1
+                    self._connection_errors += 1
                     
-                except (OSError, TimeoutError, Exception) as e:
-                    logger.warning(
-                        "mqtt_connect_failed",
+                    logger.error(
+                        "mqtt_connection_error",
                         error=str(e),
                         error_type=type(e).__name__,
                         attempt=attempt,
-                        retry_delay=current_delay
+                        max_attempts=self._max_connection_errors
                     )
                     
-                    if attempt >= max_retries:
-                        raise RuntimeError(
-                            f"Failed to connect to MQTT broker after {max_retries} attempts"
+                    if attempt < self._max_connection_errors:
+                        logger.info(
+                            "mqtt_retry_connection",
+                            retry_in=self._reconnect_delay,
+                            attempt=attempt + 1
                         )
-                    
-                    await self._async_sleep(current_delay)
-                    current_delay = min(
-                        current_delay * self.reconnect_backoff,
-                        self.max_reconnect_delay
-                    )
+                        await asyncio.sleep(self._reconnect_delay)
+                    else:
+                        logger.error(
+                            "mqtt_connection_failed_max_retries",
+                            max_attempts=self._max_connection_errors
+                        )
+                        raise
     
     async def disconnect(self) -> None:
         """Disconnect from MQTT broker gracefully."""
+        if not self._connected:
+            logger.debug("mqtt_already_disconnected")
+            return
+        
         with self._connect_lock:
             if self._client is None:
                 return
@@ -166,9 +172,11 @@ class MQTTPublisher:
             self._connected = False
             
             try:
+                logger.info("mqtt_disconnecting")
                 self._client.loop_stop()
                 self._client.disconnect()
-                logger.info("mqtt_disconnected", client_id=self.client_id)
+                self._connected = False
+                logger.info("mqtt_disconnected")
             except Exception as e:
                 logger.error(
                     "mqtt_disconnect_error",
@@ -177,6 +185,11 @@ class MQTTPublisher:
                 )
             finally:
                 self._client = None
+    
+    @property
+    def is_connected(self) -> bool:
+        """Check if MQTT client is connected."""
+        return self._connected
     
     def publish(
         self,
@@ -189,34 +202,34 @@ class MQTTPublisher:
         Publish message to MQTT topic.
         
         Args:
-            topic: MQTT topic to publish to
-            payload: Message payload dictionary (will be JSON serialized)
-            qos: QoS level (0=at most once, 1=at least once, 2=exactly once)
-            retain: Whether broker should retain message
-            
-        Raises:
-            ValueError: If topic is empty or invalid
+            topic: MQTT topic
+            payload: Message payload (dict)
+            qos: Quality of Service (0, 1, or 2)
+            retain: Retain message flag
         """
-        if not topic or not topic.strip():
-            raise ValueError("Topic cannot be empty")
-        
-        if not self._connected or self._client is None:
-            logger.debug("mqtt_not_connected", topic=topic, action="skipped")
-            return
-        
-        if payload is None:
-            logger.warning("mqtt_payload_none", topic=topic, action="skipped")
-            return
-        
-        if not isinstance(payload, dict):
+        if not self._connected:
             logger.warning(
-                "mqtt_payload_not_dict",
-                topic=topic,
-                payload_type=type(payload).__name__,
-                action="serializing_as_is"
+                "mqtt_publish_skipped_not_connected",
+                topic=topic
             )
+            return
         
         try:
+            if not topic or not topic.strip():
+                raise ValueError("Topic cannot be empty")
+            
+            if payload is None:
+                logger.warning("mqtt_payload_none", topic=topic, action="skipped")
+                return
+            
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "mqtt_payload_not_dict",
+                    topic=topic,
+                    payload_type=type(payload).__name__,
+                    action="serializing_as_is"
+                )
+            
             payload_copy = dict(payload) if isinstance(payload, dict) else payload
             
             if isinstance(payload_copy, dict) and "timestamp" not in payload_copy:
@@ -244,7 +257,7 @@ class MQTTPublisher:
                 
         except Exception as e:
             logger.error(
-                "mqtt_publish_failed",
+                "mqtt_publish_error",
                 topic=topic,
                 error=str(e),
                 error_type=type(e).__name__
@@ -384,52 +397,49 @@ class MQTTPublisher:
         self.publish(topic, payload, qos=qos, retain=retain)
     
     def _on_connect(self, client: MQTTClient, userdata, flags, rc) -> None:
-        """MQTT on_connect callback."""
+        """
+        Callback when connection established.
+        
+        Args:
+            client: MQTT client instance
+            userdata: User data
+            flags: Response flags
+            rc: Return code (0 = success)
+        """
         if rc == 0:
             self._connected = True
+            self._connection_errors = 0
             logger.info(
-                "mqtt_connection_established",
-                client_id=self.client_id,
-                rc=rc
+                "mqtt_connected",
+                host=self.host,
+                port=self.port
             )
         else:
             self._connected = False
             logger.error(
-                "mqtt_connection_refused",
-                client_id=self.client_id,
-                rc=rc
+                "mqtt_connection_failed",
+                return_code=rc
             )
     
     def _on_disconnect(self, client: MQTTClient, userdata, rc) -> None:
-        """MQTT on_disconnect callback with automatic reconnection."""
+        """
+        Callback when disconnected from broker.
+        
+        Args:
+            client: MQTT client instance
+            userdata: User data
+            rc: Return code (0 = clean disconnect)
+        """
         self._connected = False
         
         if rc == 0:
-            logger.info("mqtt_disconnected_cleanly", client_id=self.client_id)
+            logger.info("mqtt_disconnected_clean")
         else:
             logger.warning(
-                "mqtt_unexpected_disconnect",
-                client_id=self.client_id,
-                rc=rc,
-                reason=self._get_disconnect_reason(rc)
+                "mqtt_disconnected_unexpected",
+                return_code=rc
             )
     
     def _on_publish(self, client: MQTTClient, userdata, mid) -> None:
         """MQTT on_publish callback."""
         logger.debug("mqtt_message_acknowledged", mid=mid)
-    
-    def _get_disconnect_reason(self, rc: int) -> str:
-        """Get human-readable disconnect reason code."""
-        reasons = {
-            1: "Connection refused - incorrect protocol version",
-            2: "Connection refused - invalid client identifier",
-            3: "Connection refused - server unavailable",
-            4: "Connection refused - bad username or password",
-            5: "Connection refused - not authorized",
-        }
-        return reasons.get(rc, f"Unknown reason code: {rc}")
-    
-    async def _async_sleep(self, seconds: float) -> None:
-        """Async sleep helper."""
-        import asyncio
-        await asyncio.sleep(seconds)
