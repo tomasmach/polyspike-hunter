@@ -11,7 +11,7 @@ import threading
 import asyncio
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
-from paho.mqtt.client import Client as MQTTClient
+from paho.mqtt.client import Client as MQTTClient, CallbackAPIVersion
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -98,7 +98,8 @@ class MQTTPublisher:
             self._client = MQTTClient(
                 client_id=self.client_id,
                 protocol=MQTTClient.MQTTv311,
-                transport="tcp"
+                transport="tcp",
+                callback_api_version=CallbackAPIVersion.VERSION1
             )
             
             self._client.on_connect = self._on_connect
