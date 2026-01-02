@@ -71,7 +71,6 @@ class MQTTPublisher:
         self._connected = False
         self._connection_errors = 0
         self._max_connection_errors = 10
-        self._reconnect_delay = 5
         self._connect_lock = threading.Lock()
         self._publish_lock = threading.Lock()
         
@@ -148,10 +147,10 @@ class MQTTPublisher:
                     if attempt < self._max_connection_errors:
                         logger.info(
                             "mqtt_retry_connection",
-                            retry_in=self._reconnect_delay,
+                            retry_in=self.reconnect_delay,
                             attempt=attempt + 1
                         )
-                        await asyncio.sleep(self._reconnect_delay)
+                        await asyncio.sleep(self.reconnect_delay)
                     else:
                         logger.error(
                             "mqtt_connection_failed_max_retries",
