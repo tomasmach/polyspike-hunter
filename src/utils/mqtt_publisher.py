@@ -73,7 +73,7 @@ class MQTTPublisher:
         self._connection_errors = 0
         self._max_connection_errors = 10
         self._connect_lock = threading.Lock()
-        self._publish_lock = threading.Lock()
+        self._publish_lock = asyncio.Lock()
         
         logger.info(
             "mqtt_publisher_initialized",
@@ -196,21 +196,26 @@ class MQTTPublisher:
         """Check if MQTT client is connected."""
         return self._connected
     
-    def publish(
+    async def publish(
         self,
         topic: str,
         payload: Optional[Dict[str, Any]],
         qos: int = 0,
-        retain: bool = False
+        retain: bool = False,
+        publish_timeout: float = 5.0
     ) -> None:
         """
-        Publish message to MQTT topic.
-        
+        Publish message to MQTT topic (async, non-blocking).
+
+        Runs blocking paho-mqtt operations in a background thread to avoid
+        blocking the event loop. Waits for publish confirmation with timeout.
+
         Args:
             topic: MQTT topic
             payload: Message payload (dict)
             qos: Quality of Service (0, 1, or 2)
             retain: Retain message flag
+            publish_timeout: Max seconds to wait for publish confirmation
         """
         if not self._connected:
             logger.warning(
@@ -218,15 +223,15 @@ class MQTTPublisher:
                 topic=topic
             )
             return
-        
+
         try:
             if not topic or not topic.strip():
                 raise ValueError("Topic cannot be empty")
-            
+
             if payload is None:
                 logger.warning("mqtt_payload_none", topic=topic, action="skipped")
                 return
-            
+
             if not isinstance(payload, dict):
                 logger.warning(
                     "mqtt_payload_not_dict",
@@ -234,24 +239,22 @@ class MQTTPublisher:
                     payload_type=type(payload).__name__,
                     action="serializing_as_is"
                 )
-            
+
             payload_copy = dict(payload) if isinstance(payload, dict) else payload
-            
+
             if isinstance(payload_copy, dict) and "timestamp" not in payload_copy:
                 payload_copy["timestamp"] = datetime.now(timezone.utc).isoformat()
-            
+
             message = json.dumps(payload_copy, default=str)
-            
-            with self._publish_lock:
+
+            def _do_publish() -> None:
                 info = self._client.publish(
                     topic,
                     payload=message,
                     qos=qos,
                     retain=retain
                 )
-                
-                info.wait_for_publish()
-                
+                info.wait_for_publish(timeout=publish_timeout)
                 logger.debug(
                     "mqtt_message_published",
                     topic=topic,
@@ -259,7 +262,10 @@ class MQTTPublisher:
                     retain=retain,
                     mid=info.mid
                 )
-                
+
+            async with self._publish_lock:
+                await asyncio.to_thread(_do_publish)
+
         except Exception as e:
             logger.error(
                 "mqtt_publish_error",
@@ -268,14 +274,14 @@ class MQTTPublisher:
                 error_type=type(e).__name__
             )
     
-    def publish_bot_status(self, event: str, data: Dict[str, Any]) -> None:
+    async def publish_bot_status(self, event: str, data: Dict[str, Any]) -> None:
         """
         Publish bot lifecycle event.
-        
+
         Topics:
         - status/bot/events: General bot events (started, stopped, error)
         - status/bot/heartbeat: Heartbeat signals (retain=True)
-        
+
         Args:
             event: Event type (e.g., "started", "stopped", "error", "heartbeat")
             data: Event data dictionary
@@ -288,23 +294,23 @@ class MQTTPublisher:
             topic = f"status/bot/events/{event}"
             qos = 0
             retain = False
-        
+
         payload = {
             "event": event,
             "client_id": self.client_id,
             **data
         }
-        
-        self.publish(topic, payload, qos=qos, retain=retain)
+
+        await self.publish(topic, payload, qos=qos, retain=retain)
     
-    def publish_market_event(self, event: str, data: Dict[str, Any]) -> None:
+    async def publish_market_event(self, event: str, data: Dict[str, Any]) -> None:
         """
         Publish market-related event.
-        
+
         Topics:
         - market/events: Market events (spike_detected, liquidity_issue, etc.)
         - market/snapshots: Market data snapshots
-        
+
         Args:
             event: Event type (e.g., "spike_detected", "snapshot", "error")
             data: Event data dictionary (should include token_id, market_name, price, etc.)
@@ -317,22 +323,22 @@ class MQTTPublisher:
             topic = f"market/events/{event}"
             qos = 0
             retain = False
-        
+
         payload = {
             "event": event,
             **data
         }
-        
-        self.publish(topic, payload, qos=qos, retain=retain)
+
+        await self.publish(topic, payload, qos=qos, retain=retain)
     
-    def publish_trading_event(self, event: str, data: Dict[str, Any]) -> None:
+    async def publish_trading_event(self, event: str, data: Dict[str, Any]) -> None:
         """
         Publish trading execution event.
-        
+
         Topics:
         - trading/events: Trading events (signal, order_placed, trade_completed, etc.)
         - trading/positions: Position updates
-        
+
         Args:
             event: Event type (e.g., "signal", "order_placed", "trade_completed",
                   "position_opened", "position_closed", "error")
@@ -347,20 +353,20 @@ class MQTTPublisher:
             topic = f"trading/events/{event}"
             qos = 1
             retain = False
-        
+
         payload = {
             "event": event,
             **data
         }
-        
-        self.publish(topic, payload, qos=qos, retain=retain)
+
+        await self.publish(topic, payload, qos=qos, retain=retain)
     
-    def publish_balance_update(self, data: Dict[str, Any]) -> None:
+    async def publish_balance_update(self, data: Dict[str, Any]) -> None:
         """
         Publish balance update.
-        
+
         Topic: balance/current (QoS 1, retain=True)
-        
+
         Args:
             data: Balance data dictionary (should include balance, available_balance,
                   total_pnl, position_count, etc.)
@@ -369,17 +375,17 @@ class MQTTPublisher:
             "client_id": self.client_id,
             **data
         }
-        
-        self.publish("balance/current", payload, qos=1, retain=True)
+
+        await self.publish("balance/current", payload, qos=1, retain=True)
     
-    def publish_stats(self, event: str, data: Dict[str, Any]) -> None:
+    async def publish_stats(self, event: str, data: Dict[str, Any]) -> None:
         """
         Publish session statistics.
-        
+
         Topics:
         - stats/session: Session statistics (retain=True)
         - stats/periodic: Periodic stats updates
-        
+
         Args:
             event: Stats event type (e.g., "session", "periodic", "summary")
             data: Statistics data dictionary
@@ -392,14 +398,14 @@ class MQTTPublisher:
             topic = f"stats/{event}"
             qos = 1
             retain = False
-        
+
         payload = {
             "event": event,
             "client_id": self.client_id,
             **data
         }
-        
-        self.publish(topic, payload, qos=qos, retain=retain)
+
+        await self.publish(topic, payload, qos=qos, retain=retain)
     
     def _on_connect(self, client: MQTTClient, userdata, flags, rc) -> None:
         """

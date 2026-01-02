@@ -82,12 +82,14 @@ class MarketMonitor:
             max_concurrent_requests=max_concurrent_requests
         )
     
-    def on_price_update(self, callback: Callable[[PriceUpdate], None]) -> None:
+    def on_price_update(self, callback: Callable) -> None:
         """
         Register callback for price update events.
-        
+
+        Callback can be sync or async function.
+
         Args:
-            callback: Function to call on price updates
+            callback: Function to call on price updates (sync or async)
         """
         self._callbacks.append(callback)
     
@@ -338,39 +340,59 @@ class MarketMonitor:
                 return
     
     def _emit_price_update(self, update: PriceUpdate) -> None:
-        """Emit price update to all registered callbacks."""
+        """Emit price update to all registered callbacks (supports both sync and async)."""
         for idx, callback in enumerate(self._callbacks):
             # Skip disabled callbacks (circuit breaker)
             if idx in self._disabled_callbacks:
                 continue
 
             try:
-                callback(update)
-                # Reset failure count on success
-                if idx in self._callback_failure_counts:
-                    self._callback_failure_counts[idx] = 0
+                result = callback(update)
+
+                # Check if callback is async (returns a coroutine)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(self._wrap_async_callback(result, idx, update))
+                else:
+                    # Reset failure count on success for sync callbacks
+                    if idx in self._callback_failure_counts:
+                        self._callback_failure_counts[idx] = 0
+
             except Exception as e:
-                # Track failure count
-                self._callback_failure_counts[idx] = self._callback_failure_counts.get(idx, 0) + 1
+                self._handle_callback_error(idx, update, e)
 
-                logger.error(
-                    "callback_error",
-                    token_id=update.token_id,
-                    callback_name=callback.__name__ if hasattr(callback, '__name__') else str(callback),
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    failure_count=self._callback_failure_counts[idx]
-                )
+    async def _wrap_async_callback(self, coro, idx: int, update: PriceUpdate) -> None:
+        """Wrap async callback for error handling and failure tracking."""
+        try:
+            await coro
+            # Reset failure count on success
+            if idx in self._callback_failure_counts:
+                self._callback_failure_counts[idx] = 0
+        except Exception as e:
+            self._handle_callback_error(idx, update, e)
 
-                # Circuit breaker: disable callback after 3 consecutive failures
-                if self._callback_failure_counts[idx] >= 3:
-                    self._disabled_callbacks.add(idx)
-                    logger.error(
-                        "callback_disabled_circuit_breaker",
-                        token_id=update.token_id,
-                        callback_name=callback.__name__ if hasattr(callback, '__name__') else str(callback),
-                        failure_count=self._callback_failure_counts[idx]
-                    )
+    def _handle_callback_error(self, idx: int, update: PriceUpdate, e: Exception) -> None:
+        """Handle callback error with failure tracking and circuit breaker."""
+        # Track failure count
+        self._callback_failure_counts[idx] = self._callback_failure_counts.get(idx, 0) + 1
+
+        logger.error(
+            "callback_error",
+            token_id=update.token_id,
+            callback_index=idx,
+            error=str(e),
+            error_type=type(e).__name__,
+            failure_count=self._callback_failure_counts[idx]
+        )
+
+        # Circuit breaker: disable callback after 3 consecutive failures
+        if self._callback_failure_counts[idx] >= 3:
+            self._disabled_callbacks.add(idx)
+            logger.error(
+                "callback_disabled_circuit_breaker",
+                token_id=update.token_id,
+                callback_index=idx,
+                failure_count=self._callback_failure_counts[idx]
+            )
     
     def get_tracker(self, token_id: str) -> Optional[PriceTracker]:
         """Get price tracker for specific token."""
