@@ -4,7 +4,7 @@ Continuously polls selected markets and tracks price movements.
 """
 
 import asyncio
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, TYPE_CHECKING
 import structlog
 from dataclasses import dataclass
 import time
@@ -13,6 +13,9 @@ from src.core.client import PolymarketClient
 from src.core.market_selector import MarketSelector
 from src.utils.price_tracker import PriceTracker
 from src.utils.market_name_resolver import MarketNameResolver
+
+if TYPE_CHECKING:
+    from src.utils.mqtt_publisher import MQTTPublisher
 
 logger = structlog.get_logger(__name__)
 
@@ -39,6 +42,7 @@ class MarketMonitor:
         poll_interval: float = 1.0,
         price_history_window: int = 60,
         max_concurrent_requests: int = 10,
+        mqtt_publisher: Optional["MQTTPublisher"] = None,
         name_resolver: Optional[MarketNameResolver] = None,
     ):
         """
@@ -50,6 +54,7 @@ class MarketMonitor:
             poll_interval: Seconds between polls
             price_history_window: Seconds of price history to maintain
             max_concurrent_requests: Maximum concurrent API requests (default: 10)
+            mqtt_publisher: Optional MQTT publisher for event publishing
             name_resolver: Optional market name resolver for human-readable names
         """
         self.client = client
@@ -57,6 +62,7 @@ class MarketMonitor:
         self.poll_interval = poll_interval
         self.price_history_window = price_history_window
         self.max_concurrent_requests = max_concurrent_requests
+        self.mqtt_publisher = mqtt_publisher
         self.name_resolver = name_resolver
 
         self._running = False
@@ -374,6 +380,14 @@ class MarketMonitor:
     def monitored_markets(self) -> List[str]:
         """Get list of currently monitored token IDs."""
         return self._monitored_tokens.copy()
+
+    def set_mqtt_publisher(self, publisher: "MQTTPublisher") -> None:
+        """Set MQTT publisher for event publishing."""
+        self.mqtt_publisher = publisher
+
+    def set_name_resolver(self, resolver: MarketNameResolver) -> None:
+        """Set market name resolver."""
+        self.name_resolver = resolver
 
     def get_market_name(self, token_id: str) -> str:
         """
