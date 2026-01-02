@@ -7,7 +7,8 @@ import asyncio
 import signal
 import sys
 import os
-from typing import Dict
+import time
+from typing import Dict, Optional
 import structlog
 
 from config.settings import get_settings
@@ -19,6 +20,7 @@ from src.core.risk_manager import RiskManager
 from src.strategy.spike_hunter import SpikeHunterStrategy, SignalType
 from src.utils.reporting import SessionReporter, RealTimeStatsTracker
 from src.utils.market_name_resolver import MarketNameResolver
+from src.utils.mqtt_publisher import MQTTPublisher
 
 # Configure structured logging
 structlog.configure(
@@ -120,7 +122,19 @@ class PolySpikeHunter:
             max_concurrent_requests=self.settings.monitoring.max_concurrent_requests,
             name_resolver=self.name_resolver,
         )
-        
+
+        # Initialize MQTT publisher (if enabled)
+        self.mqtt_publisher: Optional[MQTTPublisher] = None
+        if self.settings.mqtt.enabled:
+            logger.info("initializing_mqtt_publisher")
+            self.mqtt_publisher = MQTTPublisher(
+                host=self.settings.mqtt.host,
+                port=self.settings.mqtt.port,
+                client_id=self.settings.mqtt.client_id,
+            )
+        else:
+            logger.info("mqtt_disabled", reason="MQTT_ENABLED=false in config")
+
         # Initialize reporting
         logger.info("initializing_session_reporter")
         self.reporter = SessionReporter()
@@ -134,6 +148,32 @@ class PolySpikeHunter:
         self._shutdown_complete = False
 
         logger.info("PolySpikeHunter initialized successfully")
+
+    async def _heartbeat_loop(self) -> None:
+        """Send periodic heartbeat to MQTT broker."""
+        interval = self.settings.mqtt.heartbeat_interval
+
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+
+                if self.mqtt_publisher and self._running:
+                    self.mqtt_publisher.publish_bot_status("heartbeat", {
+                        "uptime_seconds": int(time.time() - self.reporter.session_start),
+                        "balance": self.paper_engine.balance,
+                        "open_positions": len(self.paper_engine.positions),
+                        "total_trades": self.paper_engine.total_trades,
+                    })
+
+            except asyncio.CancelledError:
+                logger.debug("heartbeat_loop_cancelled")
+                break
+            except Exception as e:
+                logger.error(
+                    "heartbeat_error",
+                    error=str(e),
+                    error_type=type(e).__name__
+                )
     
     async def start(self) -> None:
         """Start the trading bot."""
@@ -147,6 +187,11 @@ class PolySpikeHunter:
             monitored_markets=self.settings.monitoring.max_monitored_markets
         )
 
+        # Connect MQTT if enabled
+        if self.mqtt_publisher:
+            logger.info("connecting_to_mqtt_broker")
+            await self.mqtt_publisher.connect()
+
         # Connect to Polymarket
         logger.info("connecting_to_polymarket")
         await self.client.connect()
@@ -154,12 +199,42 @@ class PolySpikeHunter:
         # Register price update callback
         self.monitor.on_price_update(self._handle_price_update)
 
+        # Initialize market names
+        logger.info("fetching_market_names")
+        await self.name_resolver.initialize(self.monitor.monitored_markets)
+
+        # Publish bot started event
+        if self.mqtt_publisher:
+            self.mqtt_publisher.publish_bot_status("started", {
+                "session_id": self.reporter.session_id,
+                "config": {
+                    "initial_balance": self.settings.paper_trading.initial_balance,
+                    "spike_threshold": self.settings.trading.spike_threshold,
+                    "position_size": self.settings.trading.position_size,
+                    "monitored_markets": len(self.monitor.monitored_markets),
+                }
+            })
+
         # Set running flag
         self._running = True
 
-        # Start monitoring (this will run until cancelled or error)
+        # Start background tasks
+        heartbeat_task = None
+        if self.mqtt_publisher:
+            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+        # Start monitoring and wait
         logger.info("Bot is now running. Press Ctrl+C to stop.")
-        await self.monitor.start()
+        try:
+            await self.monitor.start()
+        finally:
+            # Cancel background tasks
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
     
     def _handle_price_update(self, update: PriceUpdate) -> None:
         """
@@ -345,6 +420,17 @@ class PolySpikeHunter:
 
         # Get final statistics
         stats = self.paper_engine.get_statistics()
+
+        # Publish bot stopped event
+        if self.mqtt_publisher:
+            self.mqtt_publisher.publish_bot_status("stopped", {
+                "session_id": self.reporter.session_id,
+                "final_stats": stats,
+            })
+
+            # Disconnect MQTT
+            logger.info("disconnecting_from_mqtt_broker")
+            await self.mqtt_publisher.disconnect()
 
         # Save and print summary
         self.reporter.save_session_summary(stats)
