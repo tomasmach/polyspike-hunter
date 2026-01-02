@@ -7,9 +7,12 @@ import os
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
+import structlog
 
 # Load environment variables from .env file
 load_dotenv()
+
+logger = structlog.get_logger(__name__)
 
 
 class PolymarketConfig(BaseModel):
@@ -155,11 +158,121 @@ class Settings(BaseModel):
     
     @classmethod
     def from_env(cls) -> "Settings":
-        """Load settings from environment variables."""
+        """Load settings from environment variables with robust error handling."""
+        # Parse polymarket config with error handling
+        try:
+            chain_id = int(os.getenv("POLYMARKET_CHAIN_ID", "137"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="POLYMARKET_CHAIN_ID", using_default=137)
+            chain_id = 137
+
+        # Parse trading config with error handling
+        try:
+            poll_interval = float(os.getenv("POLL_INTERVAL", "1.0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="POLL_INTERVAL", using_default=1.0)
+            poll_interval = 1.0
+
+        try:
+            spike_threshold = float(os.getenv("SPIKE_THRESHOLD", "0.03"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="SPIKE_THRESHOLD", using_default=0.03)
+            spike_threshold = 0.03
+
+        try:
+            position_size = float(os.getenv("POSITION_SIZE", "5.0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="POSITION_SIZE", using_default=5.0)
+            position_size = 5.0
+
+        try:
+            stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "0.02"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="STOP_LOSS_PCT", using_default=0.02)
+            stop_loss_pct = 0.02
+
+        try:
+            take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "0.04"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="TAKE_PROFIT_PCT", using_default=0.04)
+            take_profit_pct = 0.04
+
+        try:
+            max_drawdown = float(os.getenv("MAX_DRAWDOWN", "50.0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MAX_DRAWDOWN", using_default=50.0)
+            max_drawdown = 50.0
+
+        # Parse paper trading config with error handling
+        try:
+            initial_balance = float(os.getenv("INITIAL_BALANCE", "100.0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="INITIAL_BALANCE", using_default=100.0)
+            initial_balance = 100.0
+
+        try:
+            min_position_size = float(os.getenv("MIN_POSITION_SIZE", "1.0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MIN_POSITION_SIZE", using_default=1.0)
+            min_position_size = 1.0
+
+        try:
+            max_open_positions = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MAX_OPEN_POSITIONS", using_default=10)
+            max_open_positions = 10
+
+        # Parse monitoring config with error handling
+        try:
+            max_monitored_markets = int(os.getenv("MAX_MONITORED_MARKETS", "50"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MAX_MONITORED_MARKETS", using_default=50)
+            max_monitored_markets = 50
+
+        try:
+            min_market_volume = float(os.getenv("MIN_MARKET_VOLUME", "1000.0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MIN_MARKET_VOLUME", using_default=1000.0)
+            min_market_volume = 1000.0
+
+        try:
+            price_history_window = int(os.getenv("PRICE_HISTORY_WINDOW", "60"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="PRICE_HISTORY_WINDOW", using_default=60)
+            price_history_window = 60
+
+        try:
+            max_concurrent_requests = int(os.getenv("MAX_CONCURRENT_REQUESTS", "40"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MAX_CONCURRENT_REQUESTS", using_default=40)
+            max_concurrent_requests = 40
+
+        # Validate and clamp poll_interval
+        if poll_interval <= 0 or poll_interval >= 60:
+            clamped = max(0.1, min(poll_interval, 59.9))
+            logger.warning(
+                "invalid_poll_interval",
+                value=poll_interval,
+                clamping_to=clamped,
+                reason="must be > 0 and < 60"
+            )
+            poll_interval = clamped
+
+        # Validate and clamp spike_threshold
+        if spike_threshold <= 0 or spike_threshold >= 1.0:
+            clamped = max(0.001, min(spike_threshold, 0.99))
+            logger.warning(
+                "invalid_spike_threshold",
+                value=spike_threshold,
+                clamping_to=clamped,
+                reason="must be > 0 and < 1.0"
+            )
+            spike_threshold = clamped
+
         return cls(
             polymarket=PolymarketConfig(
                 private_key=os.getenv("POLYMARKET_PRIVATE_KEY", ""),
-                chain_id=int(os.getenv("POLYMARKET_CHAIN_ID", "137")),
+                chain_id=chain_id,
                 host=os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com"),
                 funder=os.getenv(
                     "POLYMARKET_FUNDER",
@@ -170,25 +283,25 @@ class Settings(BaseModel):
                 passphrase=os.getenv("CLOB_PASSPHRASE"),
             ),
             trading=TradingConfig(
-                poll_interval=float(os.getenv("POLL_INTERVAL", "1.0")),
-                spike_threshold=float(os.getenv("SPIKE_THRESHOLD", "0.03")),
-                position_size=float(os.getenv("POSITION_SIZE", "5.0")),
-                stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0.02")),
-                take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.04")),
-                max_drawdown=float(os.getenv("MAX_DRAWDOWN", "50.0")),
+                poll_interval=poll_interval,
+                spike_threshold=spike_threshold,
+                position_size=position_size,
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
+                max_drawdown=max_drawdown,
             ),
             paper_trading=PaperTradingConfig(
                 enabled=os.getenv("PAPER_TRADING", "true").lower() == "true",
-                initial_balance=float(os.getenv("INITIAL_BALANCE", "100.0")),
-                min_position_size=float(os.getenv("MIN_POSITION_SIZE", "1.0")),
-                max_open_positions=int(os.getenv("MAX_OPEN_POSITIONS", "10")),
+                initial_balance=initial_balance,
+                min_position_size=min_position_size,
+                max_open_positions=max_open_positions,
             ),
             monitoring=MarketMonitoringConfig(
                 strategy=os.getenv("MONITOR_STRATEGY", "volume"),
-                max_monitored_markets=int(os.getenv("MAX_MONITORED_MARKETS", "50")),
-                min_market_volume=float(os.getenv("MIN_MARKET_VOLUME", "1000.0")),
-                price_history_window=int(os.getenv("PRICE_HISTORY_WINDOW", "60")),
-                max_concurrent_requests=int(os.getenv("MAX_CONCURRENT_REQUESTS", "40")),
+                max_monitored_markets=max_monitored_markets,
+                min_market_volume=min_market_volume,
+                price_history_window=price_history_window,
+                max_concurrent_requests=max_concurrent_requests,
             ),
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO"),

@@ -76,21 +76,38 @@ class RiskManager:
     ) -> tuple[bool, str]:
         """
         Check if new position can be opened based on all risk criteria.
-        
+
         Args:
             current_balance: Current total balance
             available_balance: Balance available for trading
             position_size: Proposed position size
             current_positions: Number of currently open positions
             current_drawdown: Current drawdown amount
-            
+
         Returns:
             Tuple of (can_open, reason)
         """
         # Check emergency stop
         if self._emergency_stop:
             return False, "emergency_stop_active"
-        
+
+        # Balance sanity checks
+        if current_balance < 0:
+            logger.critical(
+                "negative_balance_detected",
+                current=current_balance,
+                message="This should never happen - data corruption or logic error"
+            )
+            self.trigger_emergency_stop("negative_balance_detected")
+            return False, "negative_balance_error"
+
+        if current_balance > 1000000:
+            logger.warning(
+                "unrealistic_balance_detected",
+                current=current_balance,
+                message="Balance exceeds 1M - unrealistic for paper trading"
+            )
+
         # Check minimum balance
         if current_balance < self.min_balance_required:
             logger.warning(
@@ -185,21 +202,34 @@ class RiskManager:
     ) -> float:
         """
         Calculate appropriate position size within risk limits.
-        
+
         Args:
             available_balance: Balance available for trading
             desired_size: Desired position size (if None, uses max_position_size)
-            
+
         Returns:
-            Position size clamped to valid range
+            Position size clamped to valid range, or 0.0 if final size is below minimum.
+            Caller should check for 0.0 and skip order placement.
         """
         if desired_size is None:
             desired_size = self.max_position_size
-        
+
         # Clamp to limits
         size = max(self.min_position_size, min(desired_size, self.max_position_size))
-        
+
         # Don't exceed available balance
         size = min(size, available_balance)
-        
+
+        # Final validation: if size falls below minimum after balance constraint, return 0
+        # This can happen when available_balance < min_position_size
+        if size < self.min_position_size:
+            logger.warning(
+                "position_size_below_minimum",
+                calculated_size=size,
+                min_required=self.min_position_size,
+                available_balance=available_balance,
+                message="Returning 0.0 - caller should skip this order"
+            )
+            return 0.0
+
         return size

@@ -7,6 +7,7 @@ import asyncio
 from typing import Dict, List, Optional, Callable
 import structlog
 from dataclasses import dataclass
+import time
 
 from src.core.client import PolymarketClient
 from src.core.market_selector import MarketSelector
@@ -59,6 +60,10 @@ class MarketMonitor:
         self._trackers: Dict[str, PriceTracker] = {}
         self._callbacks: List[Callable[[PriceUpdate], None]] = []
         self._semaphore: Optional[asyncio.Semaphore] = None
+        self._callback_failure_counts: Dict[int, int] = {}  # Track callback failures
+        self._disabled_callbacks: set = set()  # Circuit breaker for failed callbacks
+        self._poll_failure_counts: Dict[str, int] = {}  # Track consecutive poll failures per token
+        self._poll_backoff_until: Dict[str, float] = {}  # Exponential backoff timestamps
 
         logger.info(
             "market_monitor_initialized",
@@ -142,7 +147,38 @@ class MarketMonitor:
                 "markets_initialized",
                 monitored_count=len(self._monitored_tokens)
             )
-    
+
+        # Cleanup unused trackers to prevent memory leak
+        self._cleanup_unused_trackers(self._monitored_tokens)
+
+    def _cleanup_unused_trackers(self, current_tokens: List[str]) -> None:
+        """
+        Remove trackers for tokens not in current monitoring list.
+        Prevents memory leak when market list changes.
+
+        Args:
+            current_tokens: List of currently monitored token IDs
+        """
+        current_tokens_set = set(current_tokens)
+        tokens_to_remove = [
+            token_id for token_id in self._trackers.keys()
+            if token_id not in current_tokens_set
+        ]
+
+        for token_id in tokens_to_remove:
+            del self._trackers[token_id]
+            logger.debug(
+                "tracker_removed",
+                token_id=token_id,
+                reason="Token no longer monitored"
+            )
+
+        if tokens_to_remove:
+            logger.info(
+                "trackers_cleaned_up",
+                removed_count=len(tokens_to_remove)
+            )
+
     async def _poll_loop(self) -> None:
         """Main polling loop."""
         if len(self._monitored_tokens) == 0:
@@ -189,6 +225,31 @@ class MarketMonitor:
         Args:
             token_id: Token ID to poll
         """
+        # Guard against semaphore being None (called before start())
+        if self._semaphore is None:
+            logger.error(
+                "semaphore_not_initialized",
+                token_id=token_id,
+                message="_poll_market called before start()"
+            )
+            return
+
+        current_time = time.time()
+
+        # Check exponential backoff - skip if in backoff period
+        if token_id in self._poll_backoff_until:
+            if current_time < self._poll_backoff_until[token_id]:
+                logger.debug(
+                    "poll_skipped_backoff",
+                    token_id=token_id,
+                    backoff_until=self._poll_backoff_until[token_id],
+                    remaining_seconds=self._poll_backoff_until[token_id] - current_time
+                )
+                return
+            else:
+                # Backoff period expired, remove it
+                del self._poll_backoff_until[token_id]
+
         # Use semaphore to limit concurrent requests
         async with self._semaphore:
             try:
@@ -199,12 +260,21 @@ class MarketMonitor:
                     logger.debug("no_price_data", token_id=token_id)
                     return
 
+                # Validate price range (Polymarket prices are probabilities: 0-1)
+                if price < 0 or price > 1.0:
+                    logger.warning(
+                        "invalid_price_range",
+                        token_id=token_id,
+                        price=price,
+                        message="Price outside valid range [0, 1.0]"
+                    )
+                    return
+
                 # Update tracker
                 tracker = self._trackers.get(token_id)
                 if tracker is None:
                     return
 
-                import time
                 timestamp = time.time()
                 tracker.add_price(price, timestamp)
 
@@ -221,27 +291,72 @@ class MarketMonitor:
 
                 self._emit_price_update(update)
 
+                # Reset failure count on success
+                if token_id in self._poll_failure_counts:
+                    self._poll_failure_counts[token_id] = 0
+
             except Exception as e:
+                # Track consecutive failures
+                self._poll_failure_counts[token_id] = self._poll_failure_counts.get(token_id, 0) + 1
+                failure_count = self._poll_failure_counts[token_id]
+
                 logger.error(
                     "poll_market_failed",
                     token_id=token_id,
                     error=str(e),
-                    error_type=type(e).__name__
+                    error_type=type(e).__name__,
+                    consecutive_failures=failure_count
                 )
+
+                # Exponential backoff: wait 2^failures seconds (max 60s)
+                if failure_count >= 3:
+                    backoff_seconds = min(2 ** (failure_count - 3), 60)
+                    self._poll_backoff_until[token_id] = current_time + backoff_seconds
+
+                    logger.warning(
+                        "poll_retry_backoff_activated",
+                        token_id=token_id,
+                        consecutive_failures=failure_count,
+                        backoff_seconds=backoff_seconds
+                    )
+
                 # Don't re-raise - allow other markets to continue
                 return
     
     def _emit_price_update(self, update: PriceUpdate) -> None:
         """Emit price update to all registered callbacks."""
-        for callback in self._callbacks:
+        for idx, callback in enumerate(self._callbacks):
+            # Skip disabled callbacks (circuit breaker)
+            if idx in self._disabled_callbacks:
+                continue
+
             try:
                 callback(update)
+                # Reset failure count on success
+                if idx in self._callback_failure_counts:
+                    self._callback_failure_counts[idx] = 0
             except Exception as e:
+                # Track failure count
+                self._callback_failure_counts[idx] = self._callback_failure_counts.get(idx, 0) + 1
+
                 logger.error(
                     "callback_error",
+                    token_id=update.token_id,
+                    callback_name=callback.__name__ if hasattr(callback, '__name__') else str(callback),
                     error=str(e),
-                    error_type=type(e).__name__
+                    error_type=type(e).__name__,
+                    failure_count=self._callback_failure_counts[idx]
                 )
+
+                # Circuit breaker: disable callback after 3 consecutive failures
+                if self._callback_failure_counts[idx] >= 3:
+                    self._disabled_callbacks.add(idx)
+                    logger.error(
+                        "callback_disabled_circuit_breaker",
+                        token_id=update.token_id,
+                        callback_name=callback.__name__ if hasattr(callback, '__name__') else str(callback),
+                        failure_count=self._callback_failure_counts[idx]
+                    )
     
     def get_tracker(self, token_id: str) -> Optional[PriceTracker]:
         """Get price tracker for specific token."""

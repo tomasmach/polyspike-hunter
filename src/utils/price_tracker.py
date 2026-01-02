@@ -8,6 +8,9 @@ from typing import Optional, List
 from dataclasses import dataclass
 import time
 import statistics
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -39,18 +42,70 @@ class PriceTracker:
     def add_price(self, price: float, timestamp: Optional[float] = None) -> None:
         """
         Add new price observation.
-        
+
         Args:
             price: Current price
             timestamp: Unix timestamp (defaults to now)
         """
+        # Price validation
+        if price is None:
+            logger.error(
+                "invalid_price_none",
+                token_id=self.token_id,
+                message="Price cannot be None - skipping"
+            )
+            return
+
+        if price < 0:
+            logger.error(
+                "invalid_price_negative",
+                token_id=self.token_id,
+                price=price,
+                message="Price cannot be negative - skipping"
+            )
+            return
+
+        if price > 1.0:
+            logger.warning(
+                "unusual_price_above_one",
+                token_id=self.token_id,
+                price=price,
+                message="Price > 1.0 is unusual for Polymarket"
+            )
+
+        # Timestamp validation
         if timestamp is None:
             timestamp = time.time()
-        
+
+        current_time = time.time()
+        if timestamp > current_time + 60:
+            logger.warning(
+                "future_timestamp_detected",
+                token_id=self.token_id,
+                timestamp=timestamp,
+                current_time=current_time,
+                delta=timestamp - current_time,
+                message="Timestamp is in future - adjusting to current time"
+            )
+            timestamp = current_time
+
         point = PricePoint(price=price, timestamp=timestamp)
         self._history.append(point)
         self._last_price = price
-        
+
+        # Deque size protection - prevent unbounded memory growth
+        if len(self._history) > 10000:
+            logger.warning(
+                "excessive_deque_size",
+                token_id=self.token_id,
+                size=len(self._history),
+                message="Deque exceeds 10000 entries - forcing cleanup"
+            )
+            # Force aggressive cleanup by removing oldest 50%
+            target_size = 5000
+            while len(self._history) > target_size:
+                self._history.popleft()
+
         # Remove old data points outside our window
         self._cleanup_old_data(timestamp)
     
