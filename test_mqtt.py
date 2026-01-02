@@ -154,6 +154,10 @@ class MQTTTester:
     
     def publish(self, topic: str, payload: dict, qos: int = 0, retain: bool = False) -> None:
         """Publish test message."""
+        if self.client is None:
+            print("❌ Cannot publish: MQTT client not connected")
+            raise RuntimeError("MQTT client not connected")
+        
         if not self.is_connected():
             raise MQTTConnectionError("Cannot publish: not connected to MQTT broker")
         
