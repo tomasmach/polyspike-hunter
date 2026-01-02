@@ -31,6 +31,11 @@ def async_retry(max_retries: int = 3, delays: Optional[List[float]] = None):
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
         async def wrapper(*args, **kwargs) -> T:
+            if max_retries <= 0:
+                raise ValueError(
+                    f"max_retries must be greater than 0, got {max_retries}"
+                )
+
             last_exception = None
 
             for attempt in range(max_retries):
@@ -58,8 +63,12 @@ def async_retry(max_retries: int = 3, delays: Optional[List[float]] = None):
                             error=str(e)
                         )
 
-            # If all retries failed, raise the last exception
-            raise last_exception
+            if last_exception is not None:
+                raise last_exception
+            else:
+                raise RuntimeError(
+                    f"All {max_retries} retry attempts failed but no exception was captured"
+                )
 
         return wrapper
     return decorator
