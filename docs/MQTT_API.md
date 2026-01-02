@@ -423,7 +423,7 @@ def on_message(client, userdata, msg):
         handle_trade_completed(payload)
     # ...
 
-client = mqtt.Client("discord_bot")
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, "discord_bot")
 client.on_connect = on_connect
 client.on_message = on_message
 
