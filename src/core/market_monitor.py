@@ -12,6 +12,7 @@ import time
 from src.core.client import PolymarketClient
 from src.core.market_selector import MarketSelector
 from src.utils.price_tracker import PriceTracker
+from src.utils.market_name_resolver import MarketNameResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +39,7 @@ class MarketMonitor:
         poll_interval: float = 1.0,
         price_history_window: int = 60,
         max_concurrent_requests: int = 10,
+        name_resolver: Optional[MarketNameResolver] = None,
     ):
         """
         Initialize market monitor.
@@ -48,12 +50,14 @@ class MarketMonitor:
             poll_interval: Seconds between polls
             price_history_window: Seconds of price history to maintain
             max_concurrent_requests: Maximum concurrent API requests (default: 10)
+            name_resolver: Optional market name resolver for human-readable names
         """
         self.client = client
         self.selector = selector
         self.poll_interval = poll_interval
         self.price_history_window = price_history_window
         self.max_concurrent_requests = max_concurrent_requests
+        self.name_resolver = name_resolver
 
         self._running = False
         self._monitored_tokens: List[str] = []
@@ -95,6 +99,10 @@ class MarketMonitor:
 
         # Select markets to monitor
         await self._initialize_markets()
+
+        # Initialize market names if resolver is provided
+        if self.name_resolver:
+            await self.name_resolver.initialize(self._monitored_tokens)
 
         # Start polling loop
         try:
@@ -366,3 +374,17 @@ class MarketMonitor:
     def monitored_markets(self) -> List[str]:
         """Get list of currently monitored token IDs."""
         return self._monitored_tokens.copy()
+
+    def get_market_name(self, token_id: str) -> str:
+        """
+        Get human-readable market name for token ID.
+
+        Args:
+            token_id: Token ID to resolve
+
+        Returns:
+            Market question string or truncated token ID if resolver not available
+        """
+        if self.name_resolver:
+            return self.name_resolver.get_name_safe(token_id)
+        return token_id[:16] + "..." if len(token_id) > 16 else token_id

@@ -11,6 +11,7 @@ import structlog
 
 from src.core.market_monitor import PriceUpdate
 from src.utils.price_tracker import PriceTracker
+from src.utils.market_name_resolver import MarketNameResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -50,26 +51,29 @@ class SpikeHunterStrategy:
         stop_loss_pct: float = 0.02,    # 2% stop loss
         ma_window_seconds: int = 10,    # Moving average window
         cooldown_seconds: int = 30,     # Cooldown after entering position
+        name_resolver: Optional[MarketNameResolver] = None,
     ):
         """
         Initialize Spike Hunter strategy.
-        
+
         Args:
             spike_threshold: Minimum price change % to trigger entry
             take_profit_pct: Take profit threshold
             stop_loss_pct: Stop loss threshold
             ma_window_seconds: Moving average calculation window
             cooldown_seconds: Cooldown period after opening position
+            name_resolver: Optional market name resolver for human-readable names
         """
         self.spike_threshold = spike_threshold
         self.take_profit_pct = take_profit_pct
         self.stop_loss_pct = stop_loss_pct
         self.ma_window_seconds = ma_window_seconds
         self.cooldown_seconds = cooldown_seconds
-        
+        self.name_resolver = name_resolver
+
         # Track recent entries to prevent spam
         self._recent_entries: Dict[str, float] = {}  # token_id -> timestamp
-        
+
         logger.info(
             "spike_hunter_initialized",
             spike_threshold=spike_threshold,
@@ -78,7 +82,21 @@ class SpikeHunterStrategy:
             ma_window=ma_window_seconds,
             cooldown=cooldown_seconds
         )
-    
+
+    def _get_market_name(self, token_id: str) -> str:
+        """
+        Get human-readable market name for token ID.
+
+        Args:
+            token_id: Token ID to resolve
+
+        Returns:
+            Market question string or truncated token ID if resolver not available
+        """
+        if self.name_resolver:
+            return self.name_resolver.get_name_safe(token_id)
+        return token_id[:16] + "..." if len(token_id) > 16 else token_id
+
     def _validate_price(self, price: Optional[float]) -> bool:
         """
         Validate that a price value is valid for Polymarket.
@@ -142,9 +160,11 @@ class SpikeHunterStrategy:
 
         # Validate price before processing
         if not self._validate_price(update.price):
+            market_name = self._get_market_name(update.token_id)
             logger.warning(
                 "invalid_price_in_entry_check",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 price=update.price
             )
             return TradingSignal(
@@ -171,9 +191,11 @@ class SpikeHunterStrategy:
         # Calculate price change vs MA
         ma = tracker.get_moving_average(self.ma_window_seconds)
         if ma is None or ma == 0:
+            market_name = self._get_market_name(update.token_id)
             logger.debug(
                 "insufficient_data_for_ma",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 ma_window=self.ma_window_seconds,
                 reason="Not enough price history to calculate moving average"
             )
@@ -193,12 +215,14 @@ class SpikeHunterStrategy:
         if spike_magnitude >= self.spike_threshold:
             # Record entry time for cooldown
             self._recent_entries[update.token_id] = current_time
-            
+
             direction = "up" if price_change_pct > 0 else "down"
-            
+            market_name = self._get_market_name(update.token_id)
+
             logger.info(
                 "spike_detected",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 price=update.price,
                 ma=ma,
                 spike_pct=f"{price_change_pct*100:+.2f}%",
@@ -231,9 +255,11 @@ class SpikeHunterStrategy:
 
         # Validate current price
         if not self._validate_price(update.price):
+            market_name = self._get_market_name(update.token_id)
             logger.error(
                 "invalid_current_price_in_exit_check",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 current_price=update.price,
                 entry_price=entry_price
             )
@@ -247,9 +273,11 @@ class SpikeHunterStrategy:
 
         # Validate entry price to prevent division by zero
         if entry_price is None or entry_price == 0:
+            market_name = self._get_market_name(update.token_id)
             logger.error(
                 "invalid_entry_price_in_exit_check",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 entry_price=entry_price,
                 current_price=update.price,
                 reason="Entry price is invalid (None or 0), cannot calculate P&L"
@@ -267,9 +295,11 @@ class SpikeHunterStrategy:
         
         # Check take profit
         if pnl_pct >= self.take_profit_pct:
+            market_name = self._get_market_name(update.token_id)
             logger.info(
                 "take_profit_triggered",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 entry_price=entry_price,
                 current_price=update.price,
                 pnl_pct=f"{pnl_pct*100:+.2f}%"
@@ -285,9 +315,11 @@ class SpikeHunterStrategy:
         
         # Check stop loss
         if pnl_pct <= -self.stop_loss_pct:
+            market_name = self._get_market_name(update.token_id)
             logger.info(
                 "stop_loss_triggered",
-                token_id=update.token_id[:16] + "...",
+                token_id=update.token_id,
+                market_name=market_name,
                 entry_price=entry_price,
                 current_price=update.price,
                 pnl_pct=f"{pnl_pct*100:+.2f}%"

@@ -18,6 +18,7 @@ from src.core.paper_trading import PaperTradingEngine, OrderSide
 from src.core.risk_manager import RiskManager
 from src.strategy.spike_hunter import SpikeHunterStrategy, SignalType
 from src.utils.reporting import SessionReporter, RealTimeStatsTracker
+from src.utils.market_name_resolver import MarketNameResolver
 
 # Configure structured logging
 structlog.configure(
@@ -83,6 +84,7 @@ class PolySpikeHunter:
             spike_threshold=self.settings.trading.spike_threshold,
             take_profit_pct=self.settings.trading.take_profit_pct,
             stop_loss_pct=self.settings.trading.stop_loss_pct,
+            name_resolver=None,  # Will be set after name_resolver is initialized
         )
         
         # Initialize market selector
@@ -102,7 +104,12 @@ class PolySpikeHunter:
             max_markets=self.settings.monitoring.max_monitored_markets,
             min_volume=self.settings.monitoring.min_market_volume,
         )
-        
+
+        # Initialize market name resolver
+        logger.info("initializing_market_name_resolver")
+        self.name_resolver = MarketNameResolver(self.client)
+        self.strategy.name_resolver = self.name_resolver  # Inject resolver into strategy
+
         # Initialize market monitor
         logger.info("initializing_market_monitor")
         self.monitor = MarketMonitor(
@@ -111,6 +118,7 @@ class PolySpikeHunter:
             poll_interval=self.settings.trading.poll_interval,
             price_history_window=self.settings.monitoring.price_history_window,
             max_concurrent_requests=self.settings.monitoring.max_concurrent_requests,
+            name_resolver=self.name_resolver,
         )
         
         # Initialize reporting
@@ -224,9 +232,11 @@ class PolySpikeHunter:
         )
         
         if not can_open:
+            market_name = self.monitor.get_market_name(signal.token_id)
             logger.warning(
                 "entry_rejected",
-                token_id=signal.token_id[:16] + "...",
+                token_id=signal.token_id,
+                market_name=market_name,
                 reason=reason
             )
             return
@@ -245,9 +255,11 @@ class PolySpikeHunter:
             # Save positions after opening
             self.paper_engine.save_positions(POSITIONS_FILE)
 
+            market_name = self.monitor.get_market_name(signal.token_id)
             logger.info(
                 "ENTRY EXECUTED",
-                token_id=signal.token_id[:16] + "...",
+                token_id=signal.token_id,
+                market_name=market_name,
                 price=f"{signal.price:.4f}",
                 size=f"${position_size:.2f}",
                 reason=signal.reason,
@@ -278,9 +290,11 @@ class PolySpikeHunter:
             trade = self.paper_engine.completed_trades[-1]
             self.reporter.log_trade(trade.to_dict())
 
+            market_name = self.monitor.get_market_name(signal.token_id)
             logger.info(
                 "EXIT EXECUTED",
-                token_id=signal.token_id[:16] + "...",
+                token_id=signal.token_id,
+                market_name=market_name,
                 entry_price=f"{position.entry_price:.4f}",
                 exit_price=f"{signal.price:.4f}",
                 pnl=f"${trade.pnl:+.2f}",
