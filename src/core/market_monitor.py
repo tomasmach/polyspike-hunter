@@ -4,7 +4,7 @@ Continuously polls selected markets and tracks price movements.
 """
 
 import asyncio
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, TYPE_CHECKING
 import structlog
 from dataclasses import dataclass
 import time
@@ -12,6 +12,10 @@ import time
 from src.core.client import PolymarketClient
 from src.core.market_selector import MarketSelector
 from src.utils.price_tracker import PriceTracker
+from src.utils.market_name_resolver import MarketNameResolver
+
+if TYPE_CHECKING:
+    from src.utils.mqtt_publisher import MQTTPublisher
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +42,8 @@ class MarketMonitor:
         poll_interval: float = 1.0,
         price_history_window: int = 60,
         max_concurrent_requests: int = 10,
+        mqtt_publisher: Optional["MQTTPublisher"] = None,
+        name_resolver: Optional[MarketNameResolver] = None,
     ):
         """
         Initialize market monitor.
@@ -48,12 +54,16 @@ class MarketMonitor:
             poll_interval: Seconds between polls
             price_history_window: Seconds of price history to maintain
             max_concurrent_requests: Maximum concurrent API requests (default: 10)
+            mqtt_publisher: Optional MQTT publisher for event publishing
+            name_resolver: Optional market name resolver for human-readable names
         """
         self.client = client
         self.selector = selector
         self.poll_interval = poll_interval
         self.price_history_window = price_history_window
         self.max_concurrent_requests = max_concurrent_requests
+        self.mqtt_publisher = mqtt_publisher
+        self.name_resolver = name_resolver
 
         self._running = False
         self._monitored_tokens: List[str] = []
@@ -72,12 +82,14 @@ class MarketMonitor:
             max_concurrent_requests=max_concurrent_requests
         )
     
-    def on_price_update(self, callback: Callable[[PriceUpdate], None]) -> None:
+    def on_price_update(self, callback: Callable) -> None:
         """
         Register callback for price update events.
-        
+
+        Callback can be sync or async function.
+
         Args:
-            callback: Function to call on price updates
+            callback: Function to call on price updates (sync or async)
         """
         self._callbacks.append(callback)
     
@@ -95,6 +107,10 @@ class MarketMonitor:
 
         # Select markets to monitor
         await self._initialize_markets()
+
+        # Initialize market names if resolver is provided
+        if self.name_resolver:
+            await self.name_resolver.initialize(self._monitored_tokens)
 
         # Start polling loop
         try:
@@ -324,39 +340,59 @@ class MarketMonitor:
                 return
     
     def _emit_price_update(self, update: PriceUpdate) -> None:
-        """Emit price update to all registered callbacks."""
+        """Emit price update to all registered callbacks (supports both sync and async)."""
         for idx, callback in enumerate(self._callbacks):
             # Skip disabled callbacks (circuit breaker)
             if idx in self._disabled_callbacks:
                 continue
 
             try:
-                callback(update)
-                # Reset failure count on success
-                if idx in self._callback_failure_counts:
-                    self._callback_failure_counts[idx] = 0
+                result = callback(update)
+
+                # Check if callback is async (returns a coroutine)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(self._wrap_async_callback(result, idx, update))
+                else:
+                    # Reset failure count on success for sync callbacks
+                    if idx in self._callback_failure_counts:
+                        self._callback_failure_counts[idx] = 0
+
             except Exception as e:
-                # Track failure count
-                self._callback_failure_counts[idx] = self._callback_failure_counts.get(idx, 0) + 1
+                self._handle_callback_error(idx, update, e)
 
-                logger.error(
-                    "callback_error",
-                    token_id=update.token_id,
-                    callback_name=callback.__name__ if hasattr(callback, '__name__') else str(callback),
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    failure_count=self._callback_failure_counts[idx]
-                )
+    async def _wrap_async_callback(self, coro, idx: int, update: PriceUpdate) -> None:
+        """Wrap async callback for error handling and failure tracking."""
+        try:
+            await coro
+            # Reset failure count on success
+            if idx in self._callback_failure_counts:
+                self._callback_failure_counts[idx] = 0
+        except Exception as e:
+            self._handle_callback_error(idx, update, e)
 
-                # Circuit breaker: disable callback after 3 consecutive failures
-                if self._callback_failure_counts[idx] >= 3:
-                    self._disabled_callbacks.add(idx)
-                    logger.error(
-                        "callback_disabled_circuit_breaker",
-                        token_id=update.token_id,
-                        callback_name=callback.__name__ if hasattr(callback, '__name__') else str(callback),
-                        failure_count=self._callback_failure_counts[idx]
-                    )
+    def _handle_callback_error(self, idx: int, update: PriceUpdate, e: Exception) -> None:
+        """Handle callback error with failure tracking and circuit breaker."""
+        # Track failure count
+        self._callback_failure_counts[idx] = self._callback_failure_counts.get(idx, 0) + 1
+
+        logger.error(
+            "callback_error",
+            token_id=update.token_id,
+            callback_index=idx,
+            error=str(e),
+            error_type=type(e).__name__,
+            failure_count=self._callback_failure_counts[idx]
+        )
+
+        # Circuit breaker: disable callback after 3 consecutive failures
+        if self._callback_failure_counts[idx] >= 3:
+            self._disabled_callbacks.add(idx)
+            logger.error(
+                "callback_disabled_circuit_breaker",
+                token_id=update.token_id,
+                callback_index=idx,
+                failure_count=self._callback_failure_counts[idx]
+            )
     
     def get_tracker(self, token_id: str) -> Optional[PriceTracker]:
         """Get price tracker for specific token."""
@@ -366,3 +402,25 @@ class MarketMonitor:
     def monitored_markets(self) -> List[str]:
         """Get list of currently monitored token IDs."""
         return self._monitored_tokens.copy()
+
+    def set_mqtt_publisher(self, publisher: "MQTTPublisher") -> None:
+        """Set MQTT publisher for event publishing."""
+        self.mqtt_publisher = publisher
+
+    def set_name_resolver(self, resolver: MarketNameResolver) -> None:
+        """Set market name resolver."""
+        self.name_resolver = resolver
+
+    def get_market_name(self, token_id: str) -> str:
+        """
+        Get human-readable market name for token ID.
+
+        Args:
+            token_id: Token ID to resolve
+
+        Returns:
+            Market question string or truncated token ID if resolver not available
+        """
+        if self.name_resolver:
+            return self.name_resolver.get_name_safe(token_id)
+        return token_id[:16] + "..." if len(token_id) > 16 else token_id

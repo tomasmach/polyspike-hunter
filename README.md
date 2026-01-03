@@ -36,7 +36,29 @@ The bot operates on a **Spike Hunter / Mean Reversion** strategy:
 * **🎯 Smart Strategy:** Spike detection with moving average analysis
 * **🛡️ Risk Management:** Position sizing, max drawdown, cooldowns
 * **📈 Real-time Reporting:** CSV/JSON logging of trades and market data
+* **📡 MQTT Integration:** Real-time events pro Discord bot monitoring
 * **🔧 Highly Configurable:** All parameters via `.env` file
+
+## 📡 MQTT Integration
+
+Bot publishes real-time events via MQTT for monitoring and Discord notifications:
+
+**Events:**
+- ✅ Bot status (started/stopped/heartbeat)
+- ✅ Spike detection
+- ✅ Position opened/closed
+- ✅ Trade completed (+ P&L)
+- ✅ Balance updates (every 12h)
+- ✅ Session statistics
+
+**MQTT Broker:**
+- Localhost (port 1883)
+- No authentication
+- Topic prefix: `polyspike/`
+
+**Documentation:** See [docs/MQTT_API.md](docs/MQTT_API.md) for complete API reference.
+
+**Discord Bot:** Separate repository (coming soon)
 
 ## 🚀 Quick Start
 
@@ -104,6 +126,8 @@ After each session, find your results in `data/sessions/TIMESTAMP/`:
 - **`markets.csv`** - Market snapshots (price, MA, volatility)
 - **`summary.json`** - Session statistics and performance metrics
 
+**MQTT Events:** See `docs/MQTT_API.md` for real-time event streaming via MQTT.
+
 ## ⚙️ Configuration
 
 Edit `.env` to customize:
@@ -127,6 +151,13 @@ POLL_INTERVAL=1.0              # Poll every second
 # Risk Management
 MAX_DRAWDOWN=50.0              # Stop if losses reach $50
 MAX_OPEN_POSITIONS=10          # Max concurrent positions
+
+# MQTT Integration
+MQTT_ENABLED=true                    # Enable MQTT publishing
+MQTT_HOST=localhost                  # MQTT broker host
+MQTT_PORT=1883                       # MQTT broker port
+MQTT_BALANCE_UPDATE_INTERVAL=43200  # Balance updates (12h)
+MQTT_HEARTBEAT_INTERVAL=30          # Heartbeat interval
 ```
 
 ## 🏗️ Architecture
@@ -179,6 +210,10 @@ python test_connection.py
 # Test market monitoring
 python test_monitor.py
 
+# Test MQTT integration
+python test_mqtt.py subscribe   # Listen to all MQTT events
+python test_mqtt.py publish     # Send test events
+
 # Run full integration test
 python -c "from main import PolySpikeHunter; print('✅ All imports OK')"
 ```
@@ -187,6 +222,7 @@ python -c "from main import PolySpikeHunter; print('✅ All imports OK')"
 
 - **[QUICKSTART.md](QUICKSTART.md)** - Detailed setup guide
 - **[AGENTS.md](AGENTS.md)** - Development guidelines and architecture
+- **[MQTT_API.md](docs/MQTT_API.md)** - MQTT API documentation for Discord bot integration
 
 ## 🔮 Roadmap
 

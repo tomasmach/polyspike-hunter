@@ -7,7 +7,8 @@ import asyncio
 import signal
 import sys
 import os
-from typing import Dict
+import time
+from typing import Dict, Optional
 import structlog
 
 from config.settings import get_settings
@@ -18,6 +19,8 @@ from src.core.paper_trading import PaperTradingEngine, OrderSide
 from src.core.risk_manager import RiskManager
 from src.strategy.spike_hunter import SpikeHunterStrategy, SignalType
 from src.utils.reporting import SessionReporter, RealTimeStatsTracker
+from src.utils.market_name_resolver import MarketNameResolver
+from src.utils.mqtt_publisher import MQTTPublisher
 
 # Configure structured logging
 structlog.configure(
@@ -83,6 +86,7 @@ class PolySpikeHunter:
             spike_threshold=self.settings.trading.spike_threshold,
             take_profit_pct=self.settings.trading.take_profit_pct,
             stop_loss_pct=self.settings.trading.stop_loss_pct,
+            name_resolver=None,  # Will be set after name_resolver is initialized
         )
         
         # Initialize market selector
@@ -102,7 +106,12 @@ class PolySpikeHunter:
             max_markets=self.settings.monitoring.max_monitored_markets,
             min_volume=self.settings.monitoring.min_market_volume,
         )
-        
+
+        # Initialize market name resolver
+        logger.info("initializing_market_name_resolver")
+        self.name_resolver = MarketNameResolver(self.client)
+        self.strategy.name_resolver = self.name_resolver  # Inject resolver into strategy
+
         # Initialize market monitor
         logger.info("initializing_market_monitor")
         self.monitor = MarketMonitor(
@@ -111,8 +120,21 @@ class PolySpikeHunter:
             poll_interval=self.settings.trading.poll_interval,
             price_history_window=self.settings.monitoring.price_history_window,
             max_concurrent_requests=self.settings.monitoring.max_concurrent_requests,
+            name_resolver=self.name_resolver,
         )
-        
+
+        # Initialize MQTT publisher (if enabled)
+        self.mqtt_publisher: Optional[MQTTPublisher] = None
+        if self.settings.mqtt.enabled:
+            logger.info("initializing_mqtt_publisher")
+            self.mqtt_publisher = MQTTPublisher(
+                host=self.settings.mqtt.host,
+                port=self.settings.mqtt.port,
+                client_id=self.settings.mqtt.client_id,
+            )
+        else:
+            logger.info("mqtt_disabled", reason="MQTT_ENABLED=false in config")
+
         # Initialize reporting
         logger.info("initializing_session_reporter")
         self.reporter = SessionReporter()
@@ -121,11 +143,102 @@ class PolySpikeHunter:
         # Track current prices for equity calculation
         self._current_prices: Dict[str, float] = {}
 
+        # Track balance updates
+        self._last_balance_value = self.settings.paper_trading.initial_balance
+
+        # Track periodic balance publishes
+        self._last_periodic_publish = time.time()
+
         # Running and shutdown flags
         self._running = False
         self._shutdown_complete = False
 
         logger.info("PolySpikeHunter initialized successfully")
+
+    async def _heartbeat_loop(self) -> None:
+        """Send periodic heartbeat to MQTT broker."""
+        interval = self.settings.mqtt.heartbeat_interval
+
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+
+                if self.mqtt_publisher and self._running:
+                    await self.mqtt_publisher.publish_bot_status("heartbeat", {
+                        "uptime_seconds": int(time.time() - self.reporter.session_start),
+                        "balance": self.paper_engine.balance,
+                        "open_positions": len(self.paper_engine.positions),
+                        "total_trades": self.paper_engine.total_trades,
+                    })
+
+            except asyncio.CancelledError:
+                logger.debug("heartbeat_loop_cancelled")
+                break
+            except Exception as e:
+                logger.error(
+                    "heartbeat_error",
+                    error=str(e),
+                    error_type=type(e).__name__
+                )
+    
+    async def _balance_update_loop(self) -> None:
+        """
+        Send balance updates to MQTT on balance change or periodic interval.
+        """
+        interval = self.settings.mqtt.balance_update_interval
+
+        while self._running:
+            try:
+                await asyncio.sleep(5)
+
+                if not self.mqtt_publisher or not self._running:
+                    continue
+
+                now = time.time()
+
+                current_balance = self.paper_engine.balance
+                total_equity = self.paper_engine.get_total_equity(self._current_prices)
+                available = self.paper_engine.get_available_balance()
+                locked = sum(pos.size for pos in self.paper_engine.positions.values())
+                unrealized_pnl = total_equity - current_balance
+
+                balance_changed = current_balance != self._last_balance_value
+                periodic_due = now - self._last_periodic_publish >= interval
+
+                if balance_changed or periodic_due:
+                    update_reason = []
+                    if balance_changed:
+                        update_reason.append("balance_changed")
+                        self._last_balance_value = current_balance
+                    if periodic_due:
+                        update_reason.append("periodic")
+                        self._last_periodic_publish = now
+
+                    await self.mqtt_publisher.publish_balance_update({
+                        "balance": current_balance,
+                        "equity": total_equity,
+                        "available_balance": available,
+                        "total_pnl": self.paper_engine.total_pnl,
+                        "position_count": len(self.paper_engine.positions),
+                        "position_value": locked,
+                        "update_reason": update_reason
+                    })
+
+                    logger.debug(
+                        "balance_update_published",
+                        balance=f"${current_balance:.2f}",
+                        reason=",".join(update_reason)
+                    )
+
+            except asyncio.CancelledError:
+                logger.debug("balance_update_loop_cancelled")
+                break
+            except Exception as e:
+                logger.error(
+                    "balance_update_error",
+                    error=str(e),
+                    error_type=type(e).__name__
+                )
     
     async def start(self) -> None:
         """Start the trading bot."""
@@ -139,6 +252,11 @@ class PolySpikeHunter:
             monitored_markets=self.settings.monitoring.max_monitored_markets
         )
 
+        # Connect MQTT if enabled
+        if self.mqtt_publisher:
+            logger.info("connecting_to_mqtt_broker")
+            await self.mqtt_publisher.connect()
+
         # Connect to Polymarket
         logger.info("connecting_to_polymarket")
         await self.client.connect()
@@ -146,26 +264,61 @@ class PolySpikeHunter:
         # Register price update callback
         self.monitor.on_price_update(self._handle_price_update)
 
+        # Publish bot started event
+        if self.mqtt_publisher:
+            await self.mqtt_publisher.publish_bot_status("started", {
+                "session_id": self.reporter.session_id,
+                "config": {
+                    "initial_balance": self.settings.paper_trading.initial_balance,
+                    "spike_threshold": self.settings.trading.spike_threshold,
+                    "position_size": self.settings.trading.position_size,
+                    "monitored_markets": len(self.monitor.monitored_markets),
+                }
+            })
+
         # Set running flag
         self._running = True
 
-        # Start monitoring (this will run until cancelled or error)
+        # Start background tasks
+        heartbeat_task = None
+        balance_task = None
+        if self.mqtt_publisher:
+            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            balance_task = asyncio.create_task(self._balance_update_loop())
+
+        # Start monitoring and wait
         logger.info("Bot is now running. Press Ctrl+C to stop.")
-        await self.monitor.start()
+        try:
+            await self.monitor.start()
+        finally:
+            # Cancel background tasks
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if balance_task:
+                balance_task.cancel()
+                try:
+                    await balance_task
+                except asyncio.CancelledError:
+                    pass
     
-    def _handle_price_update(self, update: PriceUpdate) -> None:
+    async def _handle_price_update(self, update: PriceUpdate) -> None:
         """
         Handle price update event from market monitor.
-        
+
         Args:
             update: Price update event
         """
         # Track price for equity calculation
         self._current_prices[update.token_id] = update.price
-        
+
         # Record stats
         self.stats_tracker.record_price_update()
-        
+
         # Get price tracker for this token
         tracker = self.monitor.get_tracker(update.token_id)
         if tracker is None:
@@ -188,24 +341,37 @@ class PolySpikeHunter:
             position_entry_price=position.entry_price if position else None
         )
         
+        # Publish spike detection to MQTT
+        if signal.signal_type == SignalType.ENTRY and signal.spike_magnitude:
+            if self.mqtt_publisher:
+                market_name = self.monitor.get_market_name(signal.token_id)
+                await self.mqtt_publisher.publish_market_event("spike_detected", {
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "price": signal.price,
+                    "spike_pct": signal.spike_magnitude,
+                    "direction": "up" if signal.reason == "spike_up" else "down",
+                    "reason": signal.reason,
+                })
+        
         # Execute signal
         if signal.signal_type != SignalType.NONE:
             self.stats_tracker.record_signal()
-            self._execute_signal(signal)
+            await self._execute_signal(signal)
     
-    def _execute_signal(self, signal) -> None:
+    async def _execute_signal(self, signal) -> None:
         """
         Execute trading signal.
-        
+
         Args:
             signal: Trading signal to execute
         """
         if signal.signal_type == SignalType.ENTRY:
-            self._execute_entry(signal)
+            await self._execute_entry(signal)
         elif signal.signal_type == SignalType.EXIT:
-            self._execute_exit(signal)
-    
-    def _execute_entry(self, signal) -> None:
+            await self._execute_exit(signal)
+
+    async def _execute_entry(self, signal) -> None:
         """Execute entry signal (open position)."""
         # Calculate position size
         available = self.paper_engine.get_available_balance()
@@ -224,9 +390,11 @@ class PolySpikeHunter:
         )
         
         if not can_open:
+            market_name = self.monitor.get_market_name(signal.token_id)
             logger.warning(
                 "entry_rejected",
-                token_id=signal.token_id[:16] + "...",
+                token_id=signal.token_id,
+                market_name=market_name,
                 reason=reason
             )
             return
@@ -245,21 +413,34 @@ class PolySpikeHunter:
             # Save positions after opening
             self.paper_engine.save_positions(POSITIONS_FILE)
 
+            if self.mqtt_publisher:
+                market_name = self.monitor.get_market_name(signal.token_id)
+                await self.mqtt_publisher.publish_trading_event("position/opened", {
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "entry_price": signal.price,
+                    "position_size": position_size,
+                    "reason": signal.reason,
+                    "spike_magnitude": signal.spike_magnitude,
+                })
+
+            market_name = self.monitor.get_market_name(signal.token_id)
             logger.info(
                 "ENTRY EXECUTED",
-                token_id=signal.token_id[:16] + "...",
+                token_id=signal.token_id,
+                market_name=market_name,
                 price=f"{signal.price:.4f}",
                 size=f"${position_size:.2f}",
                 reason=signal.reason,
                 balance=f"${self.paper_engine.balance:.2f}"
             )
     
-    def _execute_exit(self, signal) -> None:
+    async def _execute_exit(self, signal) -> None:
         """Execute exit signal (close position)."""
         position = self.paper_engine.get_position(signal.token_id)
         if position is None:
             return
-        
+
         # Execute paper trade
         order = self.paper_engine.create_order(
             token_id=signal.token_id,
@@ -267,7 +448,7 @@ class PolySpikeHunter:
             size=position.size,
             current_price=signal.price
         )
-        
+
         if order:
             self.stats_tracker.record_trade()
 
@@ -278,9 +459,41 @@ class PolySpikeHunter:
             trade = self.paper_engine.completed_trades[-1]
             self.reporter.log_trade(trade.to_dict())
 
+            if self.mqtt_publisher:
+                market_name = self.monitor.get_market_name(signal.token_id)
+
+                # Publish position closed
+                await self.mqtt_publisher.publish_trading_event("position/closed", {
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "entry_price": position.entry_price,
+                    "exit_price": signal.price,
+                    "position_size": position.size,
+                    "pnl": trade.pnl,
+                    "pnl_pct": trade.pnl_pct,
+                    "duration_seconds": trade.exit_timestamp - trade.entry_timestamp,
+                    "exit_reason": signal.reason,
+                })
+
+                # Publish trade completed
+                await self.mqtt_publisher.publish_trading_event("trade/completed", {
+                    "trade_id": trade.trade_id,
+                    "token_id": signal.token_id,
+                    "market_name": market_name,
+                    "entry_price": trade.entry_price,
+                    "exit_price": trade.exit_price,
+                    "size": trade.size,
+                    "pnl": trade.pnl,
+                    "pnl_pct": trade.pnl_pct,
+                    "duration_seconds": trade.exit_timestamp - trade.entry_timestamp,
+                    "reason": signal.reason,
+                })
+
+            market_name = self.monitor.get_market_name(signal.token_id)
             logger.info(
                 "EXIT EXECUTED",
-                token_id=signal.token_id[:16] + "...",
+                token_id=signal.token_id,
+                market_name=market_name,
                 entry_price=f"{position.entry_price:.4f}",
                 exit_price=f"{signal.price:.4f}",
                 pnl=f"${trade.pnl:+.2f}",
@@ -331,6 +544,17 @@ class PolySpikeHunter:
 
         # Get final statistics
         stats = self.paper_engine.get_statistics()
+
+        # Publish bot stopped event
+        if self.mqtt_publisher:
+            await self.mqtt_publisher.publish_bot_status("stopped", {
+                "session_id": self.reporter.session_id,
+                "final_stats": stats,
+            })
+
+            # Disconnect MQTT
+            logger.info("disconnecting_from_mqtt_broker")
+            await self.mqtt_publisher.disconnect()
 
         # Save and print summary
         self.reporter.save_session_summary(stats)

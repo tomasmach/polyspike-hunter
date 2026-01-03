@@ -147,6 +147,56 @@ class LoggingConfig(BaseModel):
         return v
 
 
+class MQTTConfig(BaseModel):
+    """MQTT broker configuration."""
+    
+    enabled: bool = Field(default=True, description="Enable MQTT publishing")
+    host: str = Field(default="localhost", description="MQTT broker host")
+    port: int = Field(default=1883, description="MQTT broker port")
+    client_id: str = Field(
+        default="polyspike_hunter",
+        description="MQTT client identifier"
+    )
+    topic_prefix: str = Field(
+        default="polyspike",
+        description="Topic prefix for all messages"
+    )
+    balance_update_interval: int = Field(
+        default=43200,
+        description="Balance update interval in seconds"
+    )
+    heartbeat_interval: int = Field(
+        default=30,
+        description="Heartbeat interval in seconds"
+    )
+    qos_critical: int = Field(default=1, description="QoS for critical messages")
+    qos_normal: int = Field(default=0, description="QoS for normal messages")
+    
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, v: int) -> int:
+        """Validate port range."""
+        if v < 1 or v > 65535:
+            raise ValueError("Port must be between 1 and 65535")
+        return v
+    
+    @field_validator("balance_update_interval", "heartbeat_interval")
+    @classmethod
+    def validate_interval(cls, v: int) -> int:
+        """Validate interval is positive."""
+        if v <= 0:
+            raise ValueError("Interval must be greater than 0")
+        return v
+    
+    @field_validator("qos_critical", "qos_normal")
+    @classmethod
+    def validate_qos(cls, v: int) -> int:
+        """Validate QoS level."""
+        if v not in [0, 1, 2]:
+            raise ValueError("QoS must be 0, 1, or 2")
+        return v
+
+
 class Settings(BaseModel):
     """Main application settings."""
     
@@ -155,6 +205,7 @@ class Settings(BaseModel):
     paper_trading: PaperTradingConfig
     monitoring: MarketMonitoringConfig
     logging: LoggingConfig
+    mqtt: MQTTConfig
     
     @classmethod
     def from_env(cls) -> "Settings":
@@ -247,6 +298,37 @@ class Settings(BaseModel):
             logger.warning("invalid_env_var", var="MAX_CONCURRENT_REQUESTS", using_default=40)
             max_concurrent_requests = 40
 
+        # Parse MQTT config with error handling
+        try:
+            mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MQTT_PORT", using_default=1883)
+            mqtt_port = 1883
+
+        try:
+            balance_update_interval = int(os.getenv("MQTT_BALANCE_UPDATE_INTERVAL", "43200"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MQTT_BALANCE_UPDATE_INTERVAL", using_default=43200)
+            balance_update_interval = 43200
+
+        try:
+            heartbeat_interval = int(os.getenv("MQTT_HEARTBEAT_INTERVAL", "30"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MQTT_HEARTBEAT_INTERVAL", using_default=30)
+            heartbeat_interval = 30
+
+        try:
+            qos_critical = int(os.getenv("MQTT_QOS_CRITICAL", "1"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MQTT_QOS_CRITICAL", using_default=1)
+            qos_critical = 1
+
+        try:
+            qos_normal = int(os.getenv("MQTT_QOS_NORMAL", "0"))
+        except ValueError:
+            logger.warning("invalid_env_var", var="MQTT_QOS_NORMAL", using_default=0)
+            qos_normal = 0
+
         # Validate and clamp poll_interval
         if poll_interval <= 0 or poll_interval >= 60:
             clamped = max(0.1, min(poll_interval, 59.9))
@@ -306,6 +388,17 @@ class Settings(BaseModel):
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO"),
                 log_to_file=os.getenv("LOG_TO_FILE", "true").lower() == "true",
+            ),
+            mqtt=MQTTConfig(
+                enabled=os.getenv("MQTT_ENABLED", "true").lower() == "true",
+                host=os.getenv("MQTT_HOST", "localhost"),
+                port=mqtt_port,
+                client_id=os.getenv("MQTT_CLIENT_ID", "polyspike_hunter"),
+                topic_prefix=os.getenv("MQTT_TOPIC_PREFIX", "polyspike"),
+                balance_update_interval=balance_update_interval,
+                heartbeat_interval=heartbeat_interval,
+                qos_critical=qos_critical,
+                qos_normal=qos_normal,
             ),
         )
 
