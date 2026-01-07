@@ -359,7 +359,11 @@ class PaperTradingEngine:
     
     def _open_position(self, order: PaperOrder) -> None:
         """Open a new position from BUY order."""
-        if order.price is None or order.filled_timestamp is None:
+        if order.price is None or order.price <= 0:
+            logger.error("cannot_open_position_invalid_price", token_id=order.token_id, price=order.price)
+            return
+
+        if order.filled_timestamp is None:
             logger.error("cannot_open_position_missing_data", order_id=order.order_id)
             return
 
