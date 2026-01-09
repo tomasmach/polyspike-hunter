@@ -199,7 +199,7 @@ class PolySpikeHunter:
                 current_balance = self.paper_engine.balance
                 total_equity = self.paper_engine.get_total_equity(self._current_prices)
                 available = self.paper_engine.get_available_balance()
-                locked = sum(pos.size for pos in self.paper_engine.positions.values())
+                invested_amount = sum(pos.size for pos in self.paper_engine.positions.values())
                 unrealized_pnl = total_equity - current_balance
 
                 balance_changed = current_balance != self._last_balance_value
@@ -220,7 +220,7 @@ class PolySpikeHunter:
                         "available_balance": available,
                         "total_pnl": self.paper_engine.total_pnl,
                         "position_count": len(self.paper_engine.positions),
-                        "position_value": locked,
+                        "invested_amount": invested_amount,
                         "update_reason": update_reason
                     })
 
@@ -257,6 +257,10 @@ class PolySpikeHunter:
             logger.info("connecting_to_mqtt_broker")
             await self.mqtt_publisher.connect()
 
+        # Set running flag immediately after connections succeed
+        # This ensures the flag is consistent before any background tasks start
+        self._running = True
+
         # Connect to Polymarket
         logger.info("connecting_to_polymarket")
         await self.client.connect()
@@ -275,9 +279,6 @@ class PolySpikeHunter:
                     "monitored_markets": len(self.monitor.monitored_markets),
                 }
             })
-
-        # Set running flag
-        self._running = True
 
         # Start background tasks
         heartbeat_task = None

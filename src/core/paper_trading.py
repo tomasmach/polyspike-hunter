@@ -359,7 +359,11 @@ class PaperTradingEngine:
     
     def _open_position(self, order: PaperOrder) -> None:
         """Open a new position from BUY order."""
-        if order.price is None or order.filled_timestamp is None:
+        if order.price is None or order.price <= 0:
+            logger.error("cannot_open_position_invalid_price", token_id=order.token_id, price=order.price)
+            return
+
+        if order.filled_timestamp is None:
             logger.error("cannot_open_position_missing_data", order_id=order.order_id)
             return
 
@@ -624,14 +628,17 @@ class PaperTradingEngine:
                 )
                 return False
 
-            # CRITICAL: Resilient position loading - skip invalid, load valid ones
-            loaded_positions = []
+            # CRITICAL: Load everything into temporary variables first for atomic assignment
+            # This prevents inconsistent state if validation fails mid-way
+            temp_positions: dict[str, Position] = {}
+            loaded_position_ids: list[str] = []
             failed_positions = 0
+            
             for pos_data in data.get("positions", []):
                 try:
                     position = Position.from_dict(pos_data)
-                    self.positions[position.token_id] = position
-                    loaded_positions.append(position.token_id)
+                    temp_positions[position.token_id] = position
+                    loaded_position_ids.append(position.token_id)
                 except (ValueError, KeyError, TypeError) as e:
                     # Skip invalid position but continue loading others
                     failed_positions += 1
@@ -643,41 +650,39 @@ class PaperTradingEngine:
                         message="Position data is invalid, skipping but loading others"
                     )
 
-            # CRITICAL: Restore ALL statistics from saved data
-            if "balance" in data:
-                self.balance = float(data["balance"])
+            # CRITICAL: Parse ALL statistics into temp variables before applying
+            temp_balance = float(data["balance"]) if "balance" in data else self.balance
+            temp_total_pnl = float(data["total_pnl"]) if "total_pnl" in data else self.total_pnl
+            temp_winning_trades = int(data["winning_trades"]) if "winning_trades" in data else self.winning_trades
+            temp_losing_trades = int(data["losing_trades"]) if "losing_trades" in data else self.losing_trades
+            temp_total_trades = int(data["total_trades"]) if "total_trades" in data else self.total_trades
+            temp_peak_balance = float(data["peak_balance"]) if "peak_balance" in data else self.peak_balance
+            temp_max_drawdown = float(data["max_drawdown"]) if "max_drawdown" in data else self.max_drawdown
 
-            if "total_pnl" in data:
-                self.total_pnl = float(data["total_pnl"])
-
-            if "winning_trades" in data:
-                self.winning_trades = int(data["winning_trades"])
-
-            if "losing_trades" in data:
-                self.losing_trades = int(data["losing_trades"])
-
-            if "total_trades" in data:
-                self.total_trades = int(data["total_trades"])
-
-            if "peak_balance" in data:
-                self.peak_balance = float(data["peak_balance"])
-
-            if "max_drawdown" in data:
-                self.max_drawdown = float(data["max_drawdown"])
+            # CRITICAL: Atomic assignment - only apply state if all parsing succeeded
+            # This ensures the engine is never left in an inconsistent state
+            self.positions = temp_positions
+            self.balance = temp_balance
+            self.total_pnl = temp_total_pnl
+            self.winning_trades = temp_winning_trades
+            self.losing_trades = temp_losing_trades
+            self.total_trades = temp_total_trades
+            self.peak_balance = temp_peak_balance
+            self.max_drawdown = temp_max_drawdown
 
             logger.info(
                 "positions_loaded",
                 file_path=file_path,
-                position_count=len(loaded_positions),
+                position_count=len(loaded_position_ids),
                 failed_positions=failed_positions,
-                positions=loaded_positions,
+                positions=loaded_position_ids,
                 balance=self.balance,
                 total_trades=self.total_trades,
                 total_pnl=self.total_pnl
             )
 
             # Return True if at least one position was loaded successfully
-            return len(loaded_positions) > 0 or failed_positions == 0
+            return len(loaded_position_ids) > 0 or failed_positions == 0
 
         except Exception as e:
             logger.error(

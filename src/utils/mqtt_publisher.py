@@ -247,8 +247,18 @@ class MQTTPublisher:
 
             message = json.dumps(payload_copy, default=str)
 
-            def _do_publish() -> None:
-                info = self._client.publish(
+            def _do_publish() -> bool:
+                # Capture reference atomically to avoid TOCTOU race condition
+                # (self._client could become None between check and use if disconnect
+                # happens on another thread)
+                client = self._client
+                if client is None:
+                    logger.warning(
+                        "mqtt_publish_skipped_client_none",
+                        topic=topic
+                    )
+                    return False
+                info = client.publish(
                     topic,
                     payload=message,
                     qos=qos,
@@ -262,6 +272,7 @@ class MQTTPublisher:
                     retain=retain,
                     mid=info.mid
                 )
+                return True
 
             async with self._publish_lock:
                 await asyncio.to_thread(_do_publish)
